@@ -10,8 +10,20 @@ import datetime
 # Set wide presentation layout
 st.set_page_config(page_title="Machine Data Comparison", layout="wide")
 
-st.title("Machine Data Comparison Application")
-st.write("Upload a ZIP file containing machine data to automatically analyze all parameters across all production days instantly.")
+# --- Header Layout with Thermopads Logo Branding ---
+logo_paths = ["thermopads_logo.png", "logo.png", "Thermopads_Logo.png", "image_c8655f.png", "input_file_16.png"]
+logo_path = next((path for path in logo_paths if os.path.exists(path)), None)
+
+if logo_path:
+    col_logo, col_title = st.columns([1, 5])
+    with col_logo:
+        st.image(logo_path, width=200)
+    with col_title:
+        st.title("Machine Data Comparison Application")
+        st.write("Upload a ZIP file containing machine data to automatically analyze all operating parameters across production days.")
+else:
+    st.title("Machine Data Comparison Application")
+    st.write("Upload a ZIP file containing machine data to automatically analyze all operating parameters across production days.")
 
 # --- Persistent Target Master File Path & Parsing Helper ---
 TARGETS_FILE = "screw_rpm_targets.csv"
