@@ -322,13 +322,14 @@ with tab1:
         
         all_extracted_rows = []
 
-        # Build active Screw RPM Target Master lookup dictionary
+        # Build active Screw RPM Target Master lookup dictionary with clean integer/numeric values
         target_lookup = {}
         if "target_df" in st.session_state and not st.session_state["target_df"].empty:
             for _, r in st.session_state["target_df"].iterrows():
                 comp_key = str(r["Compound"]).strip().lower()
                 try:
-                    target_lookup[comp_key] = float(r["Target Screw RPM"])
+                    val = float(r["Target Screw RPM"])
+                    target_lookup[comp_key] = int(val) if val.is_integer() else val
                 except (ValueError, TypeError):
                     pass
 
