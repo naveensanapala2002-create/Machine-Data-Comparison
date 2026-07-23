@@ -63,9 +63,16 @@ if "target_df" not in st.session_state:
         st.session_state["target_df"].to_csv(TARGETS_FILE, index=False)
     else:
         default_data = pd.DataFrame([
-            {"Compound": "XLPE", "Target Screw RPM": 40},
-            {"Compound": "EPR", "Target Screw RPM": 25},
-            {"Compound": "EPDM HARD", "Target Screw RPM": 12}
+            {"Compound": "PVC", "Target Screw RPM": 80},
+            {"Compound": "ZHFR - Black", "Target Screw RPM": 40},
+            {"Compound": "ZHFR - Other colour", "Target Screw RPM": 35},
+            {"Compound": "HDPE", "Target Screw RPM": 65},
+            {"Compound": "HFDPE", "Target Screw RPM": 65},
+            {"Compound": "SHF-2", "Target Screw RPM": 45},
+            {"Compound": "SHF2", "Target Screw RPM": 45},
+            {"Compound": "NYLON", "Target Screw RPM": 65},
+            {"Compound": "LDPE", "Target Screw RPM": 65},
+            {"Compound": "CPE", "Target Screw RPM": 30}
         ])
         st.session_state["target_df"] = default_data
         default_data.to_csv(TARGETS_FILE, index=False)
@@ -110,6 +117,7 @@ with tab2:
                 parsed_df = parse_target_excel(uploaded_excel)
                 if not parsed_df.empty:
                     st.session_state["target_df"] = parsed_df
+                    parsed_df.to_csv(TARGETS_FILE, index=False)
                     st.success("✅ Target RPMs imported successfully from Excel file!")
             
             # Method 2: Manual Data Entry
