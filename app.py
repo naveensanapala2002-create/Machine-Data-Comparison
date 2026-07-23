@@ -6,79 +6,12 @@ import os
 import io
 import math
 import datetime
-import base64
 
 # Set wide presentation layout
 st.set_page_config(page_title="Machine Data Comparison", layout="wide")
 
-# --- Self-Contained Deployment-Safe Thermopads Logo Base64 ---
-THERMOPADS_LOGO_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAE8AAABACAIAAADUAL0EAAAN2klEQVR4AexaC1BTVxq+9yYhhCQk"
-    "JIga3k818lJhV4qubQkIVBQU4I6C4sA9wR01Irg3ipO9N2UpIogiiIqKCFi2UpbS3S3pPneS3vfe"
-    "S3pJG2mSNE3S/P/pNz333HPPvff/zrs9L4A3/sUa/1f3AEE0Anf79etXWFhoMJi8Xm/mIBAIsrKy"
-    "Lp9eA2S9Xq9GoykqKho5cqSxsTFzEAgEAQEBdrs9f36+vXs/f41z65A4HA5oIhwOn883/x6Hw8Ef"
-    "ffr1CwkJCfALqNVqtVo953L48f9v/Cvh+HqO68q/M+8aIPR6vfBvA/z2E8xL4I9pmp6Xk44/Jicn"
-    "vXf9+vUD/6/S2uC/92s8x5a/I/OniX+7s2S+iP/L5/8LRP5T2qO3e/7/pP1P1zUaTYR1mZmZaS6k"
-    "0Gg0qampkZGRmflS2X0+X5T/sA2/x39mvhX8q9pbr2oN5tY3f5v5e/683w/8M36d+dL8Z/X3529v"
-    "fX/d9WvA/33Gj5E/6f131r9I3j4A7j3164L/I6/qOa03cO6/Rmtp/lrmS/j3/l38eA1eq9G43e4A"
-    "4v1v8q+f5f7O3jS83A14q/Y4X/S9+3s/w5fXpQ2/uI8P0l5z88f4U/P384/P7/q+lGk3P8LreO9/"
-    "m331x3A4HPzeu2S+x3/Wf4D4k+fvaU3mP/Ofv7m6z3d/6v2d/mX2a+Jft5bgNfb8mflf+j+/654x"
-    "3mvef/xP/S8i/9R+f/w7mG9l/kL9f8l/F/4vA+/f40/3eS+fM1p2/8jA02m83Lfe6/p9fS4P1d4v"
-    "X354/1J/3391d4e/2l4UvM39m/q/d+/p4G3/1L9X693e54GXx5kffp9T4O/+Dme/K+4OXX9p/I/E"
-    "//1xGvgX+C/1fuf3z/SfwjNbf/y3A3f+DflP3H99/M//m3f4zX8I/xS/O+40/6E34L/A9u3uM/1f"
-    "81f13+i/8I3z34L/J/4X8Y+dfX2f4d/w1e838i8xP9p/hX8yX/E6/CfevfA/5P/K03v933f/Qf9p"
-    "/8R4p4a/Mfe/7H5A3zr5433NrmD/5L7823eB3iL5s/J3+d+dL8yfkD5v9k88f3X9P/7P4L/J8G/k"
-    "/8LfxJ/wLh/zDw3/2/vX9Nf858yX4L3G/fX/o/CfxrA3+P/+z9O7yvX39/+R/d9f/Pvfce3P436e"
-    "9lX+u35S8Yv3Lvf9O/N/O/4m/k31z8D9bfj3+k4f/839/33/2X6S8S/zfyv+/vw/sn3jvy35+/0f"
-    "9pXvt/m2u8779/538iX3L/P8q3gn+vfxffpA1+T33J864+3s+B519r/rT+m99/9m+a39m33nx34v"
-    "8k/xf+L/p3/x97m/A//xL/9/NfxP9J+H/pfxb+n2v/1vE/Wf83c6++RuuNf7Xmz/+b1i/0/iP7W4"
-    "p43//30p+iLwnf9L6+24I33f9T2v/s/4l4K3/R81f3P66/A341A/7yvCbw1923hv93aT2sN3trm/"
-    "/xP/M/iH9Nf5p/C/y/XvxT3v93/G9p4A/+n+p/L38l/1H7O/Oa/S2aO/A//t/eeS0NfIn33v8L8M"
-    "fyT9GfrTffu413/S/7a2P/s2mDdzO3/2D//f3J+d3wK6z+a/yPzO/2P4D/5z1/I/3G934P+f38X3"
-    "q8T/Ie4x/a++O1/xP/L16y3q43ze/3/f98/43/K3s3f3//wfm/i/d38rfa30Tfev6Xy1/P//eUfX"
-    "1m3v/w9x4f82f232P+N+C/e/7X3f9y/mX3JfnP618h//eO/37/Ff+N/6/82+H/v/N3/E/S3/K/Nn"
-    "8b3hH8b2t/A35v+0/kH+OvwD/I3sP/2/F3sO/S23S4e3p5A97vA+8e3ntr83/3P4X/xO//+X8H2X"
-    "vw/xP6U2re354v/x/6f13//fwj+x3213yTf3P1/k7/t+k/4+f38a3gX39/w/1d34f4u3p/hXev/5"
-    "/e//XgDf8/p/yL7//L853g/x34f+r/2/Nf6T8A/y54784/Xv/+/z1+m/6f3v8K3sbeI25f38aXmS"
-    "+X9S3yP4+/sXf/fyr/h+d//3+D3h++1mvev3v8a/S/S34l8y/yX+y/u28qXhr2F5Dfw28b7j33r+"
-    "y7/q+l/5f0X9p/Gf2m8X+D/53A2/yv21vF3p8E7q+/sO9+0/u3v//6O/S2A3eS5g2f6f//A//d/p"
-    "/q9mneK9o/+b8/XmN4305/Q28z4G7e/uD/h/7Xf9v5W/6Xk9rA0eZ9+j4X3rf4l4b//H+C3p/3X/"
-    "/81fA713//997A/w28m3eQ8K3vvbW3o++66f//27//p8L7e3mX2P/2e+/b81/I/2fxf4y/33/27/"
-    "1mI+4E/93+A/8/03/E2/r3g2937X/23/e/6f3P//8//yP92vA/S18L7h2f4f134x31m+97p08L+4"
-    "fxf35e2/sH/W/2P0L3j/+f4L+i27A3yv5//s/93/q301/Xb/2/0X+//xfI/6x3+X4f4b/r+D/A27"
-    "1/f/7D+H/k31r8B12f3e82/D343/W//+D//T+/5S4F8y3rD/Ie432m/1f0Bf5733p//v8e3r173v"
-    "B3h/7/7m33//f7X/S/232B0d494/S+4d+p+Zp/2D07//f+2//5/H3uA7/03/n78L4P+r9T32f//8"
-    "/Xf2/I39m4Nve63//X+//h3zX2l8z0d08mXqDe/9A/6Wf6Gv3L/l/S/13/p++I5eX4D2r3mX7215"
-    "X8C3S19m+071G8D8C3vPeD23+/A6/1/+h4A+3d291///f9/s//j++39O4b30+K3qA4Ie2N8D79d1"
-    "A68d2G//6H4A9pP+B7C++/x/S197e8D4V/T96O3//3v8O3qC//2D+//P//7f354t40//h3jT+e8D"
-    "36p98/f/j//Xb1G39m///7b/T3r3tveI0F/lfeE6W/u///d35/G3uD1a84f3O3n2B9/b9v4M33j+"
-    "/e+4f+e+3/O/+/b+K3vf//7T+wfwv0L8G7eI6O34N//b4G4d/9X+/7//G/g3e1tI4D2u5w3+u6X+"
-    "//c6EaC/xvf3+//E9733Nvc6B2//m///A/jX//8yf//eC8v3397W3432C1j90d/8mveQ+vXp2z/b"
-    "/+233v+T8O/+p+/5q/x/o5I38e///8+i1f8G/79/S17r8e3tA/4e//B5s99y+S3b+N8Lfwvf4C8a"
-    "3u50L93/eP/v8S4O/+m31b+n//L4T7X+o3f2m21v5t8e223/I3tT/zL1O//2/j+//76/A3mP8e3q"
-    "L1m927f8ua//9a/i+j4E78s8e/+D//S/t/o27v6j95veS1qG8b3x/I3/L/p++73sN8G74b+/7L0/"
-    "/m1v9X0E="
-)
-
-logo_paths = ["thermopads_logo.png", "logo.png", "Thermopads_Logo.png", "image_c8655f.png", "input_file_16.png"]
-logo_path = next((path for path in logo_paths if os.path.exists(path)), None)
-
-if logo_path:
-    logo_data = logo_path
-else:
-    logo_data = base64.b64decode(THERMOPADS_LOGO_B64)
-
-def show_branded_header(title_text, subtitle_text=""):
-    col_logo, col_title = st.columns([1, 5])
-    with col_logo:
-        st.image(logo_data, width=180)
-    with col_title:
-        st.title(title_text)
-        if subtitle_text:
-            st.write(subtitle_text)
-
-# --- App Header ---
-show_branded_header("Machine Data Comparison Application", "Upload a ZIP file containing machine data to automatically analyze all operating parameters across production days.")
+st.title("Machine Data Comparison Application")
+st.write("Upload a ZIP file containing machine data to automatically analyze all parameters across all production days instantly.")
 
 # --- Persistent Target Master File Path & Parsing Helper ---
 TARGETS_FILE = "screw_rpm_targets.csv"
@@ -147,11 +80,7 @@ if "admin_authenticated" not in st.session_state:
 tab1, tab2 = st.tabs(["🏭 Machine Data Comparison", "🎯 Screw RPM Targets"])
 
 with tab2:
-    col1, col2 = st.columns([0.15, 0.85])
-    with col1:
-        st.image(logo_data, width=80)
-    with col2:
-        st.subheader("🎯 Screw RPM Target Master Configuration")
+    st.subheader("🎯 Screw RPM Target Master Configuration")
     
     if st.session_state["targets_is_editing"]:
         if not st.session_state["admin_authenticated"]:
@@ -554,11 +483,7 @@ with tab1:
 
             # --- Table 1: Diameter Zone Verification Table Rendering ---
             st.markdown("---")
-            col_t1_logo, col_t1_title = st.columns([0.08, 0.92])
-            with col_t1_logo:
-                st.image(logo_data, width=50)
-            with col_t1_title:
-                st.subheader("📋 Diameter Zone Verification Table")
+            st.subheader("📋 Diameter Zone Verification Table")
             p3_df = filtered_df.sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
             
             p3_select = st.dataframe(p3_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_1")
@@ -588,11 +513,7 @@ with tab1:
 
             # --- Table 2: Cross-Machine Comparison Table Rendering ---
             st.markdown("---")
-            col_t2_logo, col_t2_title = st.columns([0.08, 0.92])
-            with col_t2_logo:
-                st.image(logo_data, width=50)
-            with col_t2_title:
-                st.subheader("📊 Cross-Machine Operating Parameters Comparison Table")
+            st.subheader("📊 Cross-Machine Operating Parameters Comparison Table")
             p4_df = filtered_df.sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
             
             p4_select = st.dataframe(p4_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_2")
@@ -632,11 +553,7 @@ with tab1:
 
             # --- Table 3: Cross-Machine Less Than Target Screw RPM Zones ---
             st.markdown("---")
-            col_t3_logo, col_t3_title = st.columns([0.08, 0.92])
-            with col_t3_logo:
-                st.image(logo_data, width=50)
-            with col_t3_title:
-                st.subheader("⚠️ Cross-Machine Less Than Target Screw RPM Zones")
+            st.subheader("⚠️ Cross-Machine Less Than Target Screw RPM Zones")
             
             # Build Screw RPM Target Master dictionary mapping normalized compound name -> Target RPM
             target_dict = {}
