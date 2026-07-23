@@ -322,6 +322,16 @@ with tab1:
         
         all_extracted_rows = []
 
+        # Build active Screw RPM Target Master lookup dictionary
+        target_lookup = {}
+        if "target_df" in st.session_state and not st.session_state["target_df"].empty:
+            for _, r in st.session_state["target_df"].iterrows():
+                comp_key = str(r["Compound"]).strip().lower()
+                try:
+                    target_lookup[comp_key] = float(r["Target Screw RPM"])
+                except (ValueError, TypeError):
+                    pass
+
         for filename, file_bytes in zip_bytes_cached.items():
             machine_clean_name = os.path.basename(filename).split(" - ")[-1].replace(".csv", "").replace(".xlsx", "").replace(".xls", "").strip()
             raw_continuous_df, _ = load_and_preprocess_file(file_bytes, filename)
@@ -418,10 +428,14 @@ with tab1:
                 thickness = get_primary_value(valid_records['Thickness'])
                 current_int_dia = int(valid_records['Int_Diameter'].iloc[0])
                 
+                # Extract Target Screw RPM from Master Configuration for this compound
+                comp_key = str(compound).strip().lower()
+                target_rpm_val = target_lookup.get(comp_key, "N/A")
+                
                 start_time_str = zone_start_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_start_dt) else "NaT"
                 end_time_str = zone_end_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_end_dt) else "NaT"
                 
-                # Precise timestamps matching each internal duration type segment (Requirement 3: Kept exactly identical)
+                # Precise timestamps matching each internal duration type segment
                 rpm_start_str = rpm_subset_df['Timestamp'].min().strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else start_time_str
                 rpm_end_str = rpm_subset_df['Timestamp'].max().strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else end_time_str
                 
@@ -435,6 +449,7 @@ with tab1:
                     "Diameter": current_int_dia,
                     "Diameter Duration": diameter_duration_str,
                     "RPM": selected_int_rpm,
+                    "Target Screw RPM": target_rpm_val,
                     "RPM Duration": rpm_duration_str,
                     "Speed": selected_int_speed,
                     "Speed Duration": speed_duration_str,
@@ -451,10 +466,10 @@ with tab1:
                     "Speed_End_Time": speed_end_str
                 })
 
-        # Exact columns sequence layout matches requirement parameters 100%
+        # Columns ordered with "Target Screw RPM" placed right side of "RPM"
         columns_ordered = [
             "Machine", "Operator", "Compound", "Diameter", "Diameter Duration", 
-            "RPM", "RPM Duration", "Speed", "Speed Duration", "Thickness", 
+            "RPM", "Target Screw RPM", "RPM Duration", "Speed", "Speed Duration", "Thickness", 
             "Start Date & Time", "End Date & Time", "Duration (Hours & Minutes)", "Duration (Minutes)"
         ]
 
@@ -496,7 +511,7 @@ with tab1:
             
             p3_select = st.dataframe(p3_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_1")
             
-            # Tuple extraction layer for Table 1 (Requirement 4: Kept completely identical)
+            # Tuple extraction layer for Table 1
             if p3_select and "selection" in p3_select and p3_select["selection"].get("cells"):
                 cell_info = p3_select["selection"]["cells"][0]
                 sel_row_idx = cell_info[0] if isinstance(cell_info, tuple) else cell_info.get("row")
@@ -526,7 +541,7 @@ with tab1:
             
             p4_select = st.dataframe(p4_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_2")
             
-            # Tuple extraction layer for Table 2 (Requirement 4: Kept completely identical)
+            # Tuple extraction layer for Table 2
             if p4_select and "selection" in p4_select and p4_select["selection"].get("cells"):
                 cell_info = p4_select["selection"]["cells"][0]
                 sel_row_idx = cell_info[0] if isinstance(cell_info, tuple) else cell_info.get("row")
@@ -563,31 +578,18 @@ with tab1:
             st.markdown("---")
             st.subheader("⚠️ Cross-Machine Less Than Target Screw RPM Zones")
             
-            # Build Screw RPM Target Master dictionary mapping normalized compound name -> Target RPM
-            target_dict = {}
-            if "target_df" in st.session_state and not st.session_state["target_df"].empty:
-                for _, r in st.session_state["target_df"].iterrows():
-                    comp_name = str(r["Compound"]).strip().lower()
-                    try:
-                        target_dict[comp_name] = float(r["Target Screw RPM"])
-                    except (ValueError, TypeError):
-                        pass
-
-            # Filter p4_df rows where Compound exists in Master AND Actual RPM < Target Screw RPM
+            # Filter p4_df rows where Target Screw RPM exists AND Actual RPM < Target Screw RPM
             p5_rows = []
-            if target_dict:
-                for idx, row in p4_df.iterrows():
-                    comp_key = str(row["Compound"]).strip().lower()
-                    if comp_key in target_dict:
-                        target_rpm = target_dict[comp_key]
-                        try:
-                            actual_rpm = float(row["RPM"])
-                            if actual_rpm < target_rpm:
-                                p5_rows.append(row)
-                        except (ValueError, TypeError):
-                            pass
+            for idx, row in p4_df.iterrows():
+                try:
+                    target_rpm = float(row["Target Screw RPM"])
+                    actual_rpm = float(row["RPM"])
+                    if actual_rpm < target_rpm:
+                        p5_rows.append(row)
+                except (ValueError, TypeError):
+                    pass
 
-            p5_df = pd.DataFrame(p5_rows) if p5_rows else pd.DataFrame(columns=p4_df.columns)
+            p5_df = pd.DataFrame(p5_rows) if p5_rows else pd.DataFrame(columns=columns_ordered)
             
             p5_select = st.dataframe(p5_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_3")
             
