@@ -258,7 +258,7 @@ with tab1:
                 st.session_state.file_details.append(status_entry)
                 return pd.DataFrame(), set()
                 
-            required_cols = ['Timestamp', 'Speed', 'Screw rpm', 'Comound', 'Thickness', 'Diameter', 'Operator']
+            required_cols = ['Timestamp', 'Speed', 'Screw rpm', 'Compound', 'Thickness', 'Diameter', 'Operator']
             col_mapping = {}
             for rc in required_cols:
                 found = False
