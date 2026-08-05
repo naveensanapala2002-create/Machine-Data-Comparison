@@ -62,20 +62,8 @@ if "target_df" not in st.session_state:
         st.session_state["target_df"] = parse_target_excel("Screw rpm.xlsx")
         st.session_state["target_df"].to_csv(TARGETS_FILE, index=False)
     else:
-        default_data = pd.DataFrame([
-            {"Compound": "PVC", "Target Screw RPM": 80},
-            {"Compound": "ZHFR - Black", "Target Screw RPM": 40},
-            {"Compound": "ZHFR - Other colour", "Target Screw RPM": 35},
-            {"Compound": "HDPE", "Target Screw RPM": 65},
-            {"Compound": "HFDPE", "Target Screw RPM": 65},
-            {"Compound": "SHF-2", "Target Screw RPM": 45},
-            {"Compound": "SHF2", "Target Screw RPM": 45},
-            {"Compound": "NYLON", "Target Screw RPM": 65},
-            {"Compound": "LDPE", "Target Screw RPM": 65},
-            {"Compound": "CPE", "Target Screw RPM": 30}
-        ])
-        st.session_state["target_df"] = default_data
-        default_data.to_csv(TARGETS_FILE, index=False)
+        # Initialize as empty DataFrame - only saved data will be displayed
+        st.session_state["target_df"] = pd.DataFrame(columns=["Compound", "Target Screw RPM"])
 
 if "targets_is_editing" not in st.session_state:
     st.session_state["targets_is_editing"] = False
@@ -467,7 +455,7 @@ with tab1:
                     "Speed_End_Time": speed_end_str
                 })
 
-        # Columns ordered with "Target Screw RPM" placed right side of "RPM"
+        # Exact columns sequence layout matches requirement parameters 100%
         columns_ordered = [
             "Machine", "Operator", "Compound", "Diameter", "Diameter Duration", 
             "RPM", "Target Screw RPM", "RPM Duration", "Speed", "Speed Duration", "Thickness", 
