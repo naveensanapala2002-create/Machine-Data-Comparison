@@ -505,65 +505,33 @@ with tab1:
 
             target_columns = ["Diameter Duration", "RPM Duration", "Speed Duration", "Duration (Hours & Minutes)", "Duration (Minutes)"]
 
+            def display_selection_window(select_data, df_source):
+                if select_data and isinstance(select_data, dict) and select_data.get("selection", {}).get("rows"):
+                    sel_row_idx = select_data["selection"]["rows"][0]
+                    if sel_row_idx < len(df_source):
+                        row_data = df_source.iloc[sel_row_idx]
+                        st.info(
+                            f"⏱️ **EXACT TIME WINDOW FOR SELECTED RUN**\n\n"
+                            f"• **Diameter Run Window:** `{row_data['Start Date & Time']}` to `{row_data['End Date & Time']}`\n\n"
+                            f"• **RPM Run Window:** `{row_data['RPM_Start_Time']}` to `{row_data['RPM_End_Time']}`\n\n"
+                            f"• **Speed Run Window:** `{row_data['Speed_Start_Time']}` to `{row_data['Speed_End_Time']}`"
+                        )
+
             # --- Table 1: Diameter Zone Verification Table Rendering ---
             st.markdown("---")
             st.subheader("📋 Diameter Zone Verification Table")
             p3_df = filtered_df.sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
             
-            p3_select = st.dataframe(p3_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_1")
-            
-            # Tuple extraction layer for Table 1
-            if p3_select and "selection" in p3_select and p3_select["selection"].get("cells"):
-                cell_info = p3_select["selection"]["cells"][0]
-                sel_row_idx = cell_info[0] if isinstance(cell_info, tuple) else cell_info.get("row")
-                sel_col_name = cell_info[1] if isinstance(cell_info, tuple) else cell_info.get("column")
-                
-                if sel_row_idx is not None and sel_row_idx < len(p3_df):
-                    row_data = p3_df.iloc[sel_row_idx]
-                    
-                    # Dynamic matching layer: Extract exact run windows per duration type
-                    if sel_col_name in ["Diameter Duration", "Duration (Hours & Minutes)", "Duration (Minutes)"]:
-                        st.info(f"⏱️ **EXACT WINDOW FOR: {sel_col_name}**\n\n"
-                                f"• **Start Date & Time:** `{row_data['Start Date & Time']}`\n\n"
-                                f"• **End Date & Time:** `{row_data['End Date & Time']}`")
-                    elif sel_col_name == "RPM Duration":
-                        st.info(f"⏱️ **EXACT WINDOW FOR: RPM Duration (RPM: {row_data['RPM']})**\n\n"
-                                f"• **Start Date & Time:** `{row_data['RPM_Start_Time']}`\n\n"
-                                f"• **End Date & Time:** `{row_data['RPM_End_Time']}`")
-                    elif sel_col_name == "Speed Duration":
-                        st.info(f"⏱️ **EXACT WINDOW FOR: Speed Duration (Speed: {row_data['Speed']})**\n\n"
-                                f"• **Start Date & Time:** `{row_data['Speed_Start_Time']}`\n\n"
-                                f"• **End Date & Time:** `{row_data['Speed_End_Time']}`")
+            p3_select = st.dataframe(p3_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="table_1")
+            display_selection_window(p3_select, p3_df)
 
             # --- Table 2: Cross-Machine Comparison Table Rendering ---
             st.markdown("---")
             st.subheader("📊 Cross-Machine Operating Parameters Comparison Table")
             p4_df = filtered_df.sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
             
-            p4_select = st.dataframe(p4_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_2")
-            
-            # Tuple extraction layer for Table 2
-            if p4_select and "selection" in p4_select and p4_select["selection"].get("cells"):
-                cell_info = p4_select["selection"]["cells"][0]
-                sel_row_idx = cell_info[0] if isinstance(cell_info, tuple) else cell_info.get("row")
-                sel_col_name = cell_info[1] if isinstance(cell_info, tuple) else cell_info.get("column")
-                
-                if sel_row_idx is not None and sel_row_idx < len(p4_df):
-                    row_data = p4_df.iloc[sel_row_idx]
-                    
-                    # Dynamic matching layer: Extract exact run windows per duration type
-                    if sel_col_name in ["Diameter Duration", "Duration (Hours & Minutes)", "Duration (Minutes)"]:
-                        st.info(f"⏱️ **EXACT WINDOW FOR: {sel_col_name}**\n\n"
-                                f"• **Start Date & Time:** `{row_data['Start Date & Time']}`\n\n"
-                                f"• **End Date & Time:** `{row_data['End Date & Time']}`")
-                    elif sel_col_name == "RPM Duration":
-                        st.info(f"⏱️ **EXACT WINDOW FOR: RPM Duration (RPM: {row_data['RPM']})**\n\n"
-                                f"• **Start Date & Time:** `{row_data['RPM_Start_Time']}`\n\n"
-                                f"• **End Date & Time:** `{row_data['RPM_End_Time']}`")
-                    elif sel_col_name == "Speed Duration":
-                        st.info(f"⏱️ **EXACT WINDOW FOR: Speed Duration (Speed: {row_data['Speed']})**\n\n"
-                                f"• **Start Date & Time:** `{row_data['Speed_Start_Time']}`\n\n"
-                                f"• **End Date & Time:** `{row_data['Speed_End_Time']}`")
+            p4_select = st.dataframe(p4_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="table_2")
+            display_selection_window(p4_select, p4_df)
             
             # Master Exporter CSV Utility Buffer for Table 2
             csv_buffer = io.StringIO()
@@ -592,29 +560,8 @@ with tab1:
 
             p5_df = pd.DataFrame(p5_rows) if p5_rows else pd.DataFrame(columns=columns_ordered)
             
-            p5_select = st.dataframe(p5_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_3")
-            
-            # Tuple extraction layer for Table 3
-            if p5_select and "selection" in p5_select and p5_select["selection"].get("cells"):
-                cell_info = p5_select["selection"]["cells"][0]
-                sel_row_idx = cell_info[0] if isinstance(cell_info, tuple) else cell_info.get("row")
-                sel_col_name = cell_info[1] if isinstance(cell_info, tuple) else cell_info.get("column")
-                
-                if sel_row_idx is not None and sel_row_idx < len(p5_df):
-                    row_data = p5_df.iloc[sel_row_idx]
-                    
-                    if sel_col_name in ["Diameter Duration", "Duration (Hours & Minutes)", "Duration (Minutes)"]:
-                        st.info(f"⏱️ **EXACT WINDOW FOR: {sel_col_name}**\n\n"
-                                f"• **Start Date & Time:** `{row_data['Start Date & Time']}`\n\n"
-                                f"• **End Date & Time:** `{row_data['End Date & Time']}`")
-                    elif sel_col_name == "RPM Duration":
-                        st.info(f"⏱️ **EXACT WINDOW FOR: RPM Duration (RPM: {row_data['RPM']})**\n\n"
-                                f"• **Start Date & Time:** `{row_data['RPM_Start_Time']}`\n\n"
-                                f"• **End Date & Time:** `{row_data['RPM_End_Time']}`")
-                    elif sel_col_name == "Speed Duration":
-                        st.info(f"⏱️ **EXACT WINDOW FOR: Speed Duration (Speed: {row_data['Speed']})**\n\n"
-                                f"• **Start Date & Time:** `{row_data['Speed_Start_Time']}`\n\n"
-                                f"• **End Date & Time:** `{row_data['Speed_End_Time']}`")
+            p5_select = st.dataframe(p5_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="table_3")
+            display_selection_window(p5_select, p5_df)
             
             # Exporter CSV Utility Buffer for Table 3
             csv_buffer3 = io.StringIO()
