@@ -63,15 +63,25 @@ if "target_df" not in st.session_state:
         st.session_state["target_df"].to_csv(TARGETS_FILE, index=False)
     else:
         default_data = pd.DataFrame([
-            {"Compound": "XLPE", "Target Screw RPM": 40},
-            {"Compound": "EPR", "Target Screw RPM": 25},
-            {"Compound": "EPDM HARD", "Target Screw RPM": 12}
+            {"Compound": "PVC", "Target Screw RPM": 80},
+            {"Compound": "ZHFR - Black", "Target Screw RPM": 40},
+            {"Compound": "ZHFR - Other colour", "Target Screw RPM": 35},
+            {"Compound": "HDPE", "Target Screw RPM": 65},
+            {"Compound": "HFDPE", "Target Screw RPM": 65},
+            {"Compound": "SHF-2", "Target Screw RPM": 45},
+            {"Compound": "SHF2", "Target Screw RPM": 45},
+            {"Compound": "NYLON", "Target Screw RPM": 65},
+            {"Compound": "LDPE", "Target Screw RPM": 65},
+            {"Compound": "CPE", "Target Screw RPM": 30}
         ])
         st.session_state["target_df"] = default_data
         default_data.to_csv(TARGETS_FILE, index=False)
 
 if "targets_is_editing" not in st.session_state:
     st.session_state["targets_is_editing"] = False
+
+if "admin_authenticated" not in st.session_state:
+    st.session_state["admin_authenticated"] = False
 
 # --- Application Navigation Tabs ---
 tab1, tab2 = st.tabs(["🏭 Machine Data Comparison", "🎯 Screw RPM Targets"])
@@ -80,42 +90,62 @@ with tab2:
     st.subheader("🎯 Screw RPM Target Master Configuration")
     
     if st.session_state["targets_is_editing"]:
-        st.markdown("#### Edit Screw RPM Targets")
-        st.info("Method 1: Upload an Excel file OR Method 2: Manually edit/add/remove records in the table below.")
-        
-        # Method 1: Import Excel File
-        uploaded_excel = st.file_uploader("Import Excel File for Target RPMs", type=["xlsx", "xls"], key="target_excel_uploader")
-        if uploaded_excel is not None:
-            parsed_df = parse_target_excel(uploaded_excel)
-            if not parsed_df.empty:
-                st.session_state["target_df"] = parsed_df
-                st.success("✅ Target RPMs imported successfully from Excel file!")
-        
-        # Method 2: Manual Data Entry
-        st.markdown("#### Manual Data Entry")
-        edited_df = st.data_editor(
-            st.session_state["target_df"],
-            num_rows="dynamic",
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Compound": st.column_config.TextColumn("Compound", required=True),
-                "Target Screw RPM": st.column_config.NumberColumn("Target Screw RPM", min_value=0, required=True)
-            },
-            key="targets_data_editor"
-        )
-        
-        if st.button("💾 Save Targets", key="btn_save_targets"):
-            clean_df = edited_df.dropna(subset=["Compound", "Target Screw RPM"]).copy()
-            clean_df["Compound"] = clean_df["Compound"].astype(str).str.strip()
-            clean_df["Target Screw RPM"] = pd.to_numeric(clean_df["Target Screw RPM"], errors="coerce")
-            clean_df = clean_df.dropna(subset=["Target Screw RPM"]).reset_index(drop=True)
+        if not st.session_state["admin_authenticated"]:
+            st.warning("🔒 Admin Access Required to Edit Targets")
+            admin_pwd = st.text_input("Enter Admin Password:", type="password", key="admin_pwd_input")
+            col_auth1, col_auth2 = st.columns([1, 4])
+            with col_auth1:
+                if st.button("Unlock Editing", key="btn_unlock_editing"):
+                    if admin_pwd == "admin123":
+                        st.session_state["admin_authenticated"] = True
+                        st.success("✅ Admin authenticated successfully!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Incorrect Admin Password!")
+            with col_auth2:
+                if st.button("Cancel", key="btn_cancel_editing"):
+                    st.session_state["targets_is_editing"] = False
+                    st.session_state["admin_authenticated"] = False
+                    st.rerun()
+        else:
+            st.markdown("#### Edit Screw RPM Targets")
+            st.info("Method 1: Upload an Excel file OR Method 2: Manually edit/add/remove records in the table below.")
             
-            st.session_state["target_df"] = clean_df
-            clean_df.to_csv(TARGETS_FILE, index=False)
-            st.session_state["targets_is_editing"] = False
-            st.success("✅ Target master saved permanently!")
-            st.rerun()
+            # Method 1: Import Excel File
+            uploaded_excel = st.file_uploader("Import Excel File for Target RPMs", type=["xlsx", "xls"], key="target_excel_uploader")
+            if uploaded_excel is not None:
+                parsed_df = parse_target_excel(uploaded_excel)
+                if not parsed_df.empty:
+                    st.session_state["target_df"] = parsed_df
+                    parsed_df.to_csv(TARGETS_FILE, index=False)
+                    st.success("✅ Target RPMs imported successfully from Excel file!")
+            
+            # Method 2: Manual Data Entry
+            st.markdown("#### Manual Data Entry")
+            edited_df = st.data_editor(
+                st.session_state["target_df"],
+                num_rows="dynamic",
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Compound": st.column_config.TextColumn("Compound", required=True),
+                    "Target Screw RPM": st.column_config.NumberColumn("Target Screw RPM", min_value=0, required=True)
+                },
+                key="targets_data_editor"
+            )
+            
+            if st.button("💾 Save Targets", key="btn_save_targets"):
+                clean_df = edited_df.dropna(subset=["Compound", "Target Screw RPM"]).copy()
+                clean_df["Compound"] = clean_df["Compound"].astype(str).str.strip()
+                clean_df["Target Screw RPM"] = pd.to_numeric(clean_df["Target Screw RPM"], errors="coerce")
+                clean_df = clean_df.dropna(subset=["Target Screw RPM"]).reset_index(drop=True)
+                
+                st.session_state["target_df"] = clean_df
+                clean_df.to_csv(TARGETS_FILE, index=False)
+                st.session_state["targets_is_editing"] = False
+                st.session_state["admin_authenticated"] = False
+                st.success("✅ Target master saved permanently!")
+                st.rerun()
     else:
         # Frozen Read-Only Display
         st.dataframe(st.session_state["target_df"], use_container_width=True, hide_index=True)
@@ -228,7 +258,7 @@ with tab1:
                 st.session_state.file_details.append(status_entry)
                 return pd.DataFrame(), set()
                 
-            required_cols = ['Timestamp', 'Speed', 'Screw rpm', 'Comound', 'Thickness', 'Diameter', 'Operator']
+            required_cols = ['Timestamp', 'Speed', 'Screw rpm', 'Compound', 'Thickness', 'Diameter', 'Operator']
             col_mapping = {}
             for rc in required_cols:
                 found = False
@@ -291,6 +321,17 @@ with tab1:
         st.session_state.file_details = []
         
         all_extracted_rows = []
+
+        # Build active Screw RPM Target Master lookup dictionary with clean integer/numeric values
+        target_lookup = {}
+        if "target_df" in st.session_state and not st.session_state["target_df"].empty:
+            for _, r in st.session_state["target_df"].iterrows():
+                comp_key = str(r["Compound"]).strip().lower()
+                try:
+                    val = float(r["Target Screw RPM"])
+                    target_lookup[comp_key] = int(val) if val.is_integer() else val
+                except (ValueError, TypeError):
+                    pass
 
         for filename, file_bytes in zip_bytes_cached.items():
             machine_clean_name = os.path.basename(filename).split(" - ")[-1].replace(".csv", "").replace(".xlsx", "").replace(".xls", "").strip()
@@ -388,10 +429,14 @@ with tab1:
                 thickness = get_primary_value(valid_records['Thickness'])
                 current_int_dia = int(valid_records['Int_Diameter'].iloc[0])
                 
+                # Extract Target Screw RPM from Master Configuration for this compound
+                comp_key = str(compound).strip().lower()
+                target_rpm_val = target_lookup.get(comp_key, "N/A")
+                
                 start_time_str = zone_start_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_start_dt) else "NaT"
                 end_time_str = zone_end_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_end_dt) else "NaT"
                 
-                # Precise timestamps matching each internal duration type segment (Requirement 3: Kept exactly identical)
+                # Precise timestamps matching each internal duration type segment
                 rpm_start_str = rpm_subset_df['Timestamp'].min().strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else start_time_str
                 rpm_end_str = rpm_subset_df['Timestamp'].max().strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else end_time_str
                 
@@ -405,6 +450,7 @@ with tab1:
                     "Diameter": current_int_dia,
                     "Diameter Duration": diameter_duration_str,
                     "RPM": selected_int_rpm,
+                    "Target Screw RPM": target_rpm_val,
                     "RPM Duration": rpm_duration_str,
                     "Speed": selected_int_speed,
                     "Speed Duration": speed_duration_str,
@@ -421,10 +467,10 @@ with tab1:
                     "Speed_End_Time": speed_end_str
                 })
 
-        # Exact columns sequence layout matches requirement parameters 100%
+        # Columns ordered with "Target Screw RPM" placed right side of "RPM"
         columns_ordered = [
             "Machine", "Operator", "Compound", "Diameter", "Diameter Duration", 
-            "RPM", "RPM Duration", "Speed", "Speed Duration", "Thickness", 
+            "RPM", "Target Screw RPM", "RPM Duration", "Speed", "Speed Duration", "Thickness", 
             "Start Date & Time", "End Date & Time", "Duration (Hours & Minutes)", "Duration (Minutes)"
         ]
 
@@ -466,7 +512,7 @@ with tab1:
             
             p3_select = st.dataframe(p3_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_1")
             
-            # Tuple extraction layer for Table 1 (Requirement 4: Kept completely identical)
+            # Tuple extraction layer for Table 1
             if p3_select and "selection" in p3_select and p3_select["selection"].get("cells"):
                 cell_info = p3_select["selection"]["cells"][0]
                 sel_row_idx = cell_info[0] if isinstance(cell_info, tuple) else cell_info.get("row")
@@ -496,7 +542,7 @@ with tab1:
             
             p4_select = st.dataframe(p4_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_2")
             
-            # Tuple extraction layer for Table 2 (Requirement 4: Kept completely identical)
+            # Tuple extraction layer for Table 2
             if p4_select and "selection" in p4_select and p4_select["selection"].get("cells"):
                 cell_info = p4_select["selection"]["cells"][0]
                 sel_row_idx = cell_info[0] if isinstance(cell_info, tuple) else cell_info.get("row")
@@ -533,31 +579,18 @@ with tab1:
             st.markdown("---")
             st.subheader("⚠️ Cross-Machine Less Than Target Screw RPM Zones")
             
-            # Build Screw RPM Target Master dictionary mapping normalized compound name -> Target RPM
-            target_dict = {}
-            if "target_df" in st.session_state and not st.session_state["target_df"].empty:
-                for _, r in st.session_state["target_df"].iterrows():
-                    comp_name = str(r["Compound"]).strip().lower()
-                    try:
-                        target_dict[comp_name] = float(r["Target Screw RPM"])
-                    except (ValueError, TypeError):
-                        pass
-
-            # Filter p4_df rows where Compound exists in Master AND Actual RPM < Target Screw RPM
+            # Filter p4_df rows where Target Screw RPM exists AND Actual RPM < Target Screw RPM
             p5_rows = []
-            if target_dict:
-                for idx, row in p4_df.iterrows():
-                    comp_key = str(row["Compound"]).strip().lower()
-                    if comp_key in target_dict:
-                        target_rpm = target_dict[comp_key]
-                        try:
-                            actual_rpm = float(row["RPM"])
-                            if actual_rpm < target_rpm:
-                                p5_rows.append(row)
-                        except (ValueError, TypeError):
-                            pass
+            for idx, row in p4_df.iterrows():
+                try:
+                    target_rpm = float(row["Target Screw RPM"])
+                    actual_rpm = float(row["RPM"])
+                    if actual_rpm < target_rpm:
+                        p5_rows.append(row)
+                except (ValueError, TypeError):
+                    pass
 
-            p5_df = pd.DataFrame(p5_rows) if p5_rows else pd.DataFrame(columns=p4_df.columns)
+            p5_df = pd.DataFrame(p5_rows) if p5_rows else pd.DataFrame(columns=columns_ordered)
             
             p5_select = st.dataframe(p5_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-cell", key="table_3")
             
