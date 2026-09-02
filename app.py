@@ -172,11 +172,6 @@ with tab1:
 
     # UPDATED: DATE/TIME FORMAT NORMALIZATION
     def fast_parse_timestamp(series, filepath=""):
-        """
-        ADAPTIVE DATE/TIME NORMALIZATION GATEWAY:
-        Detects and normalizes all valid date/time formats from user files into
-        the core datetime format while reporting invalid strings.
-        """
         clean_series = series.astype(str).str.strip()
         parsed = pd.Series(pd.NaT, index=series.index, dtype='datetime64[ns]')
         
@@ -186,12 +181,12 @@ with tab1:
             
         s = clean_series[valid_mask]
         
-        # 1. 12-Hour AM/PM timestamps (e.g. '8/13/2026 6:09:41 AM', '7/17/2026 5:59:48 PM')
+        # 1. 12-Hour AM/PM timestamps
         am_pm_mask = s.str.contains(r'(?i)\b(?:am|pm)\b')
         if am_pm_mask.any():
             parsed.loc[s[am_pm_mask].index] = pd.to_datetime(s[am_pm_mask], errors='coerce')
             
-        # 2. Industrial YYYY-DD-MM sequences (e.g. '2026-01-08' to '2026-12-08' for Aug 1-12)
+        # 2. Industrial YYYY-DD-MM sequences
         rem_mask = valid_mask & parsed.isna()
         if rem_mask.any():
             s_rem = clean_series[rem_mask]
@@ -275,7 +270,9 @@ with tab1:
             for rc in required_cols:
                 found = False
                 for actual_col in df.columns:
-                    if rc.lower().replace(" ", "") == actual_col.lower().replace(" ", ""):
+                    norm_actual = actual_col.lower().replace(" ", "").replace("_", "")
+                    norm_rc = rc.lower().replace(" ", "").replace("_", "")
+                    if norm_rc == norm_actual or (rc == 'Compound' and norm_actual == 'comound'):
                         col_mapping[actual_col] = rc
                         found = True
                 status_entry["columns"][rc] = "✓" if found else "✗"
@@ -286,11 +283,8 @@ with tab1:
                 return pd.DataFrame(), set()
                 
             df = df.rename(columns=col_mapping)
-            if 'Comound' not in df.columns and 'Compound' in df.columns:
-                df = df.rename(columns={'Compound': 'Comound'})
                 
             raw_dates = df['Timestamp'].copy()
-            # UPDATED: DATE/TIME FORMAT NORMALIZATION
             df['Timestamp'] = fast_parse_timestamp(df['Timestamp'], filepath)
 
             # Report unparseable values with complete metadata
@@ -365,7 +359,7 @@ with tab1:
                 
                 condition_dia = raw_continuous_df['Int_Diameter'] != raw_continuous_df['Int_Diameter'].shift()
                 condition_op  = raw_continuous_df['Operator'] != raw_continuous_df['Operator'].shift()
-                condition_cmp = raw_continuous_df['Comound'] != raw_continuous_df['Comound'].shift()
+                condition_cmp = raw_continuous_df['Compound'] != raw_continuous_df['Compound'].shift()
                 condition_thk = raw_continuous_df['Thickness'] != raw_continuous_df['Thickness'].shift()
                 
                 raw_continuous_df['Zone_Block'] = (condition_dia | condition_op | condition_cmp | condition_thk).cumsum()
@@ -436,7 +430,7 @@ with tab1:
                         return modes.iloc[0] if not modes.empty else (series.iloc[0] if not series.empty else "N/A")
                         
                     operator = get_primary_value(valid_records['Operator'])
-                    compound = get_primary_value(valid_records['Comound'])
+                    compound = get_primary_value(valid_records['Compound'])
                     thickness = get_primary_value(valid_records['Thickness'])
                     current_int_dia = int(valid_records['Int_Diameter'].iloc[0])
                     
