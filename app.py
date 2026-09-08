@@ -75,7 +75,8 @@ if "target_df" not in st.session_state:
             {"Compound": "TMEIC", "Target Screw RPM": 8},
             {"Compound": "EPR", "Target Screw RPM": 50},
             {"Compound": "XLPE", "Target Screw RPM": 55},
-            {"Compound": "PU", "Target Screw RPM": 15}
+            {"Compound": "PU", "Target Screw RPM": 15},
+            {"Compound": "TYPE-C", "Target Screw RPM": 30}
         ])
         st.session_state["target_df"] = default_data
         default_data.to_csv(TARGETS_FILE, index=False)
@@ -170,13 +171,7 @@ with tab1:
     if "file_details" not in st.session_state:
         st.session_state.file_details = []
 
-    # UPDATED: DATE/TIME FORMAT NORMALIZATION
     def fast_parse_timestamp(series, filepath=""):
-        """
-        ADAPTIVE DATE/TIME NORMALIZATION GATEWAY:
-        Detects and normalizes all valid date/time formats from user files into
-        the core datetime format while reporting invalid strings.
-        """
         clean_series = series.astype(str).str.strip()
         parsed = pd.Series(pd.NaT, index=series.index, dtype='datetime64[ns]')
         
@@ -186,12 +181,12 @@ with tab1:
             
         s = clean_series[valid_mask]
         
-        # 1. 12-Hour AM/PM timestamps (e.g. '8/13/2026 6:09:41 AM', '7/17/2026 5:59:48 PM')
+        # 1. 12-Hour AM/PM timestamps
         am_pm_mask = s.str.contains(r'(?i)\b(?:am|pm)\b')
         if am_pm_mask.any():
             parsed.loc[s[am_pm_mask].index] = pd.to_datetime(s[am_pm_mask], errors='coerce')
             
-        # 2. Industrial YYYY-DD-MM sequences (e.g. '2026-01-08' to '2026-12-08' for Aug 1-12)
+        # 2. Industrial YYYY-DD-MM sequences
         rem_mask = valid_mask & parsed.isna()
         if rem_mask.any():
             s_rem = clean_series[rem_mask]
@@ -262,7 +257,7 @@ with tab1:
                 st.session_state.file_details.append(status_entry)
                 return pd.DataFrame(), set()
                 
-            df.columns = [c.strip() for c in df.columns]
+            df.columns = [str(c).strip() for c in df.columns]
             status_entry["rows"] = len(df)
             
             if df.empty:
@@ -275,9 +270,12 @@ with tab1:
             for rc in required_cols:
                 found = False
                 for actual_col in df.columns:
-                    if rc.lower().replace(" ", "") == actual_col.lower().replace(" ", ""):
+                    norm_actual = actual_col.lower().replace(" ", "").replace("_", "")
+                    norm_rc = rc.lower().replace(" ", "").replace("_", "")
+                    if norm_rc == norm_actual or (rc == 'Compound' and norm_actual in ['comound', 'compoundname']):
                         col_mapping[actual_col] = rc
                         found = True
+                        break
                 status_entry["columns"][rc] = "✓" if found else "✗"
                 
             if "✗" in status_entry["columns"].values():
@@ -286,11 +284,8 @@ with tab1:
                 return pd.DataFrame(), set()
                 
             df = df.rename(columns=col_mapping)
-            if 'Comound' not in df.columns and 'Compound' in df.columns:
-                df = df.rename(columns={'Compound': 'Comound'})
                 
             raw_dates = df['Timestamp'].copy()
-            # UPDATED: DATE/TIME FORMAT NORMALIZATION
             df['Timestamp'] = fast_parse_timestamp(df['Timestamp'], filepath)
 
             # Report unparseable values with complete metadata
@@ -363,9 +358,14 @@ with tab1:
                 if raw_continuous_df.empty:
                     continue
                 
+                # Forward fill metadata
+                raw_continuous_df['Compound'] = raw_continuous_df['Compound'].astype(str).str.strip().replace({'nan': np.nan, '': np.nan}).ffill().fillna("Unknown")
+                raw_continuous_df['Operator'] = raw_continuous_df['Operator'].astype(str).str.strip().replace({'nan': np.nan, '': np.nan}).ffill().fillna("Unknown")
+                raw_continuous_df['Thickness'] = raw_continuous_df['Thickness'].ffill().fillna(0)
+
                 condition_dia = raw_continuous_df['Int_Diameter'] != raw_continuous_df['Int_Diameter'].shift()
                 condition_op  = raw_continuous_df['Operator'] != raw_continuous_df['Operator'].shift()
-                condition_cmp = raw_continuous_df['Comound'] != raw_continuous_df['Comound'].shift()
+                condition_cmp = raw_continuous_df['Compound'] != raw_continuous_df['Compound'].shift()
                 condition_thk = raw_continuous_df['Thickness'] != raw_continuous_df['Thickness'].shift()
                 
                 raw_continuous_df['Zone_Block'] = (condition_dia | condition_op | condition_cmp | condition_thk).cumsum()
@@ -383,15 +383,12 @@ with tab1:
                         (block_df['Screw rpm'] > 0)
                     ].copy()
                     
-                    if valid_records.empty:
+                    if len(valid_records) <= 20:
                         continue
                         
-                    dia_deltas = valid_records['Timestamp'].diff().dropna().dt.total_seconds()
-                    dia_seconds = dia_deltas[dia_deltas <= 300].sum()
-                    if dia_seconds == 0:
-                        dia_seconds = (zone_end_dt - zone_start_dt).total_seconds()
+                    dia_seconds = (valid_records['Timestamp'].max() - valid_records['Timestamp'].min()).total_seconds()
                     
-                    if dia_seconds <= 1200:
+                    if dia_seconds < 1200:
                         continue
                         
                     diameter_duration_str = f"{len(valid_records)} minutes"
@@ -403,30 +400,27 @@ with tab1:
                         continue
                     selected_int_rpm = mode_rpm_series.iloc[0]
                     
-                    rpm_subset_df = valid_records[valid_records['Int_RPM'] == selected_int_rpm]
-                    rpm_deltas = rpm_subset_df['Timestamp'].diff().dropna().dt.total_seconds()
-                    rpm_seconds = rpm_deltas[rpm_deltas <= 300].sum()
-                    if rpm_seconds == 0 and len(rpm_subset_df) > 0:
-                        rpm_seconds = (rpm_subset_df['Timestamp'].max() - rpm_subset_df['Timestamp'].min()).total_seconds()
-                    
-                    if rpm_seconds <= 1200:
+                    rpm_subset_df = valid_records[(valid_records['Int_RPM'] - selected_int_rpm).abs() <= 1]
+                    if len(rpm_subset_df) <= 20:
+                        continue
+                        
+                    rpm_seconds = (rpm_subset_df['Timestamp'].max() - rpm_subset_df['Timestamp'].min()).total_seconds()
+                    if rpm_seconds < 1200:
                         continue
                         
                     rpm_duration_str = f"{len(rpm_subset_df)} minutes"
                     
-                    rpm_filtered_df = valid_records[valid_records['Int_RPM'] == selected_int_rpm]
-                    mode_speed_series = rpm_filtered_df['Int_Speed'].mode()
+                    mode_speed_series = rpm_subset_df['Int_Speed'].mode()
                     if mode_speed_series.empty:
                         continue
                     selected_int_speed = mode_speed_series.iloc[0]
                     
-                    speed_subset_df = rpm_filtered_df[rpm_filtered_df['Int_Speed'] == selected_int_speed]
-                    speed_deltas = speed_subset_df['Timestamp'].diff().dropna().dt.total_seconds()
-                    speed_seconds = speed_deltas[speed_deltas <= 300].sum()
-                    if speed_seconds == 0 and len(speed_subset_df) > 0:
-                        speed_seconds = (speed_subset_df['Timestamp'].max() - speed_subset_df['Timestamp'].min()).total_seconds()
-                    
-                    if speed_seconds <= 1200:
+                    speed_subset_df = rpm_subset_df[(rpm_subset_df['Int_Speed'] - selected_int_speed).abs() <= 1]
+                    if len(speed_subset_df) <= 20:
+                        continue
+                        
+                    speed_seconds = (speed_subset_df['Timestamp'].max() - speed_subset_df['Timestamp'].min()).total_seconds()
+                    if speed_seconds < 1200:
                         continue
                         
                     speed_duration_str = f"{len(speed_subset_df)} minutes"
@@ -436,7 +430,7 @@ with tab1:
                         return modes.iloc[0] if not modes.empty else (series.iloc[0] if not series.empty else "N/A")
                         
                     operator = get_primary_value(valid_records['Operator'])
-                    compound = get_primary_value(valid_records['Comound'])
+                    compound = get_primary_value(valid_records['Compound'])
                     thickness = get_primary_value(valid_records['Thickness'])
                     current_int_dia = int(valid_records['Int_Diameter'].iloc[0])
                     
@@ -473,7 +467,8 @@ with tab1:
                         "RPM_Start_Time": rpm_start_str,
                         "RPM_End_Time": rpm_end_str,
                         "Speed_Start_Time": speed_start_str,
-                        "Speed_End_Time": speed_end_str
+                        "Speed_End_Time": speed_end_str,
+                        "dia_seconds_raw": dia_seconds
                     })
 
         return pd.DataFrame(all_extracted_rows), tracking_log
@@ -543,8 +538,6 @@ with tab1:
                 (master_df["Machine"].isin(selected_machines))
             ]
 
-            target_columns = ["Diameter Duration", "RPM Duration", "Speed Duration", "Duration (Hours & Minutes)", "Duration (Minutes)"]
-
             def display_selection_window(select_data, df_source):
                 if select_data and isinstance(select_data, dict) and select_data.get("selection", {}).get("rows"):
                     sel_row_idx = select_data["selection"]["rows"][0]
@@ -557,18 +550,26 @@ with tab1:
                             f"• **Speed Run Window:** `{row_data['Speed_Start_Time']}` to `{row_data['Speed_End_Time']}`"
                         )
 
-            # --- Table 1: Diameter Zone Verification Table Rendering ---
+            # --- Table 1: Diameter Zone Verification Table Rendering (Deduplicated Distinct Runs) ---
             st.markdown("---")
             st.subheader("📋 Diameter Zone Verification Table")
-            p3_df = filtered_df.sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
+            
+            # Deduplicate runs having identical machine, compound, diameter, RPM, and speed while keeping the longest duration
+            p3_df = filtered_df.sort_values(by=["dia_seconds_raw"], ascending=False).drop_duplicates(
+                subset=["Machine", "Diameter", "Compound", "RPM", "Speed"]
+            ).sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
             
             p3_select = st.dataframe(p3_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="table_1")
             display_selection_window(p3_select, p3_df)
 
-            # --- Table 2: Cross-Machine Comparison Table Rendering ---
+            # --- Table 2: Cross-Machine Operating Parameters Comparison Table (Aggregated Matrix) ---
             st.markdown("---")
             st.subheader("📊 Cross-Machine Operating Parameters Comparison Table")
-            p4_df = filtered_df.sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
+            
+            # Group by physical comparative targets (Diameter, Machine, Compound) to prevent repeating identical parameters
+            p4_df = filtered_df.sort_values(by=["dia_seconds_raw"], ascending=False).drop_duplicates(
+                subset=["Diameter", "Machine", "Compound"]
+            ).sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
             
             p4_select = st.dataframe(p4_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="table_2")
             display_selection_window(p4_select, p4_df)
@@ -587,7 +588,6 @@ with tab1:
             st.markdown("---")
             st.subheader("⚠️ Cross-Machine Less Than Target Screw RPM Zones")
             
-            # Filter p4_df rows where Target Screw RPM exists AND Actual RPM < Target Screw RPM
             p5_rows = []
             for idx, row in p4_df.iterrows():
                 try:
