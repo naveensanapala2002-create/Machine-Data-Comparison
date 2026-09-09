@@ -6,6 +6,7 @@ import os
 import io
 import math
 import datetime
+import concurrent.futures
 
 st.set_page_config(page_title="Machine Data Comparison", layout="wide")
 
@@ -172,6 +173,12 @@ with tab1:
         st.session_state.file_details = []
 
     def fast_parse_timestamp(series):
+        # Direct pass-through if already in datetime format (e.g. from Excel)
+        if pd.api.types.is_datetime64_any_dtype(series):
+            if hasattr(series.dt, 'tz') and series.dt.tz is not None:
+                return series.dt.tz_localize(None)
+            return series
+
         clean_series = series.astype(str).str.strip()
         parsed = pd.Series(pd.NaT, index=series.index, dtype='datetime64[ns]')
         
@@ -179,9 +186,10 @@ with tab1:
         if not valid_mask.any():
             return parsed
             
-        unique_vals = clean_series[valid_mask].drop_duplicates()
-        u_parsed = pd.Series(pd.NaT, index=unique_vals.index, dtype='datetime64[ns]')
-        u_str = unique_vals
+        s_valid = clean_series[valid_mask]
+        unique_arr = s_valid.unique()
+        u_parsed = pd.Series(pd.NaT, index=range(len(unique_arr)), dtype='datetime64[ns]')
+        u_str = pd.Series(unique_arr)
         
         # 1. 12-Hour AM/PM timestamps
         am_pm_mask = u_str.str.contains(r'(?i)\b(?:am|pm)\b')
@@ -206,7 +214,7 @@ with tab1:
         rem_mask = u_parsed.isna()
         if rem_mask.any():
             u_rem = u_str[rem_mask]
-            sample = u_rem.iloc[:min(40, len(u_rem))]
+            sample = u_rem.iloc[:min(50, len(u_rem))]
             
             candidates = [
                 "%d-%m-%Y %H:%M:%S",
@@ -280,43 +288,34 @@ with tab1:
                 dt_mixed = dt_mixed.dt.tz_localize(None)
             u_parsed.loc[u_rem.index] = dt_mixed
             
-        mapping = dict(zip(unique_vals, u_parsed))
-        parsed.loc[valid_mask] = clean_series[valid_mask].map(mapping)
+        mapping = dict(zip(unique_arr, u_parsed))
+        parsed.loc[valid_mask] = s_valid.map(mapping)
         return parsed
 
-    def load_and_preprocess_file(file_bytes, filepath, tracking_log=None):
+    def load_and_preprocess_file(file_bytes, filepath):
         filename = os.path.basename(filepath)
         ext = os.path.splitext(filename)[1].lower()
         
         status_entry = {"name": filename, "ext": ext, "status": "Failed", "reason": "", "rows": 0, "columns": {}, "available_dates": set()}
+        input_dates = []
+        exclusions = []
         
         try:
+            # Fast Header Inspection to read ONLY the 7 required columns from large files
             if ext == '.csv':
-                df = pd.read_csv(io.BytesIO(file_bytes), low_memory=False)
-                st.session_state.zip_status["csv_read"] += 1
+                df_header = pd.read_csv(io.BytesIO(file_bytes), nrows=0)
             elif ext in ['.xlsx', '.xls']:
-                df = pd.read_excel(io.BytesIO(file_bytes))
-                st.session_state.zip_status["excel_read"] += 1
+                df_header = pd.read_excel(io.BytesIO(file_bytes), nrows=0)
             else:
                 status_entry["reason"] = "Unsupported format"
-                st.session_state.zip_status["failed_files"] += 1
-                st.session_state.file_details.append(status_entry)
-                return pd.DataFrame(), set()
-                
-            df.columns = [str(c).strip() for c in df.columns]
-            status_entry["rows"] = len(df)
-            
-            if df.empty:
-                status_entry["reason"] = "Empty data source sheet structure"
-                st.session_state.file_details.append(status_entry)
-                return pd.DataFrame(), set()
+                return pd.DataFrame(), status_entry, input_dates, exclusions
                 
             required_cols = ['Timestamp', 'Speed', 'Screw rpm', 'Compound', 'Thickness', 'Diameter', 'Operator']
             col_mapping = {}
             for rc in required_cols:
                 found = False
-                for actual_col in df.columns:
-                    norm_actual = actual_col.lower().replace(" ", "").replace("_", "")
+                for actual_col in df_header.columns:
+                    norm_actual = str(actual_col).strip().lower().replace(" ", "").replace("_", "")
                     norm_rc = rc.lower().replace(" ", "").replace("_", "")
                     if norm_rc == norm_actual or (rc == 'Compound' and norm_actual in ['comound', 'compoundname']):
                         col_mapping[actual_col] = rc
@@ -326,22 +325,31 @@ with tab1:
                 
             if "✗" in status_entry["columns"].values():
                 status_entry["reason"] = "Required columns missing from dataset headers"
-                st.session_state.file_details.append(status_entry)
-                return pd.DataFrame(), set()
+                return pd.DataFrame(), status_entry, input_dates, exclusions
+
+            # Parse ONLY the mapped required columns (skipping dozens/hundreds of unused machine log columns)
+            usecols = list(col_mapping.keys())
+            if ext == '.csv':
+                df = pd.read_csv(io.BytesIO(file_bytes), usecols=usecols, low_memory=False)
+            else:
+                df = pd.read_excel(io.BytesIO(file_bytes), usecols=usecols)
                 
-            # Immediately keep only required columns to eliminate overhead from unused sensors
-            keep_cols = list(col_mapping.keys())
-            df = df[keep_cols].rename(columns=col_mapping)
-                
+            df = df.rename(columns=col_mapping)
+            df.columns = [str(c).strip() for c in df.columns]
+            status_entry["rows"] = len(df)
+            
+            if df.empty:
+                status_entry["reason"] = "Empty data source sheet structure"
+                return pd.DataFrame(), status_entry, input_dates, exclusions
+
             raw_dates = df['Timestamp'].copy()
             df['Timestamp'] = fast_parse_timestamp(df['Timestamp'])
 
-            # Report unparseable values with complete metadata only when NaT exists
-            if tracking_log is not None and df['Timestamp'].isna().any():
+            if df['Timestamp'].isna().any():
                 invalid_mask = df['Timestamp'].isna() & ~raw_dates.isna() & ~raw_dates.astype(str).str.strip().str.lower().isin(['nan', 'nat', '', 'none', 'null'])
                 if invalid_mask.any():
                     for idx in df[invalid_mask].index:
-                        tracking_log["exclusions"].append({
+                        exclusions.append({
                             "File Name": filename,
                             "Column Name": "Timestamp",
                             "Row Number": idx + 2,
@@ -355,8 +363,8 @@ with tab1:
                 df = df.sort_values('Timestamp')
             df = df.reset_index(drop=True)
             
-            if not df.empty and tracking_log is not None:
-                tracking_log["input_dates"].append((df['Timestamp'].iloc[0], df['Timestamp'].iloc[-1], filename))
+            if not df.empty:
+                input_dates.append((df['Timestamp'].iloc[0], df['Timestamp'].iloc[-1], filename))
 
             for col in ['Speed', 'Screw rpm', 'Thickness', 'Diameter']:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -372,16 +380,154 @@ with tab1:
             df = df.dropna(subset=['Int_Diameter']).reset_index(drop=True)
             
             status_entry["status"] = "Read Successfully"
-            st.session_state.file_details.append(status_entry)
-            return df, detected_prod_dates
+            return df, status_entry, input_dates, exclusions
             
         except Exception as e:
             status_entry["reason"] = f"Pipeline execution error: {str(e)}"
-            st.session_state.zip_status["failed_files"] += 1
-            st.session_state.file_details.append(status_entry)
-            return pd.DataFrame(), set()
+            return pd.DataFrame(), status_entry, input_dates, exclusions
 
-    # --- MAIN FAST PROCESSING PIPELINE ---
+    def process_single_file(filename, file_bytes, target_lookup):
+        machine_clean_name = os.path.basename(filename).split(" - ")[-1].replace(".csv", "").replace(".xlsx", "").replace(".xls", "").strip()
+        raw_continuous_df, status_entry, file_input_dates, file_exclusions = load_and_preprocess_file(file_bytes, filename)
+        
+        extracted_rows = []
+        if raw_continuous_df.empty:
+            return extracted_rows, status_entry, file_input_dates, file_exclusions
+            
+        raw_continuous_df['Compound'] = raw_continuous_df['Compound'].astype(str).str.strip().replace({'nan': np.nan, '': np.nan}).ffill().fillna("Unknown")
+        raw_continuous_df['Operator'] = raw_continuous_df['Operator'].astype(str).str.strip().replace({'nan': np.nan, '': np.nan}).ffill().fillna("Unknown")
+        raw_continuous_df['Thickness'] = raw_continuous_df['Thickness'].ffill().fillna(0)
+
+        condition_dia = raw_continuous_df['Int_Diameter'] != raw_continuous_df['Int_Diameter'].shift()
+        condition_op  = raw_continuous_df['Operator'] != raw_continuous_df['Operator'].shift()
+        condition_cmp = raw_continuous_df['Compound'] != raw_continuous_df['Compound'].shift()
+        condition_thk = raw_continuous_df['Thickness'] != raw_continuous_df['Thickness'].shift()
+        
+        change_mask = (condition_dia | condition_op | condition_cmp | condition_thk).to_numpy()
+        if len(change_mask) == 0:
+            return extracted_rows, status_entry, file_input_dates, file_exclusions
+            
+        change_mask[0] = False
+        split_indices = np.flatnonzero(change_mask)
+        block_starts = np.concatenate(([0], split_indices))
+        block_ends = np.concatenate((split_indices, [len(raw_continuous_df)]))
+        
+        for start_idx, end_idx in zip(block_starts, block_ends):
+            if (end_idx - start_idx) <= 20:
+                continue
+                
+            block_df = raw_continuous_df.iloc[start_idx:end_idx]
+            
+            zone_start_dt = block_df['Timestamp'].iloc[0]
+            zone_end_dt = block_df['Timestamp'].iloc[-1]
+            
+            valid_mask = (
+                (block_df['Diameter'] > 0) & 
+                (block_df['Speed'] > 0) & 
+                (block_df['Screw rpm'] > 0)
+            )
+            valid_records = block_df[valid_mask]
+            
+            if len(valid_records) <= 20:
+                continue
+                
+            t_min = valid_records['Timestamp'].iloc[0]
+            t_max = valid_records['Timestamp'].iloc[-1]
+            dia_seconds = (t_max - t_min).total_seconds()
+            
+            if dia_seconds < 1200:
+                continue
+                
+            diameter_duration_str = f"{len(valid_records)} minutes"
+            duration_hm_str = parse_duration_hm(dia_seconds)
+            duration_min_str = f"{math.ceil(dia_seconds / 60.0)} minutes"
+            
+            min_screw_rpm_val = valid_records['Screw rpm'].min()
+            max_screw_rpm_val = valid_records['Screw rpm'].max()
+            min_speed_val = valid_records['Speed'].min()
+            max_speed_val = valid_records['Speed'].max()
+            
+            mode_rpm_series = valid_records['Int_RPM'].mode()
+            if mode_rpm_series.empty:
+                continue
+            selected_int_rpm = mode_rpm_series.iloc[0]
+            
+            rpm_mask = (valid_records['Int_RPM'] - selected_int_rpm).abs() <= 1
+            rpm_subset_df = valid_records[rpm_mask]
+            if len(rpm_subset_df) <= 20:
+                continue
+                
+            rpm_seconds = (rpm_subset_df['Timestamp'].iloc[-1] - rpm_subset_df['Timestamp'].iloc[0]).total_seconds()
+            if rpm_seconds < 1200:
+                continue
+                
+            rpm_duration_str = f"{len(rpm_subset_df)} minutes"
+            
+            mode_speed_series = rpm_subset_df['Int_Speed'].mode()
+            if mode_speed_series.empty:
+                continue
+            selected_int_speed = mode_speed_series.iloc[0]
+            
+            speed_mask = (rpm_subset_df['Int_Speed'] - selected_int_speed).abs() <= 1
+            speed_subset_df = rpm_subset_df[speed_mask]
+            if len(speed_subset_df) <= 20:
+                continue
+                
+            speed_seconds = (speed_subset_df['Timestamp'].iloc[-1] - speed_subset_df['Timestamp'].iloc[0]).total_seconds()
+            if speed_seconds < 1200:
+                continue
+                
+            speed_duration_str = f"{len(speed_subset_df)} minutes"
+            
+            operator = valid_records['Operator'].iloc[0]
+            compound = valid_records['Compound'].iloc[0]
+            thickness = valid_records['Thickness'].iloc[0]
+            current_int_dia = int(valid_records['Int_Diameter'].iloc[0])
+            
+            comp_key = str(compound).strip().lower()
+            target_rpm_val = target_lookup.get(comp_key, "N/A")
+            
+            start_time_str = zone_start_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_start_dt) else "NaT"
+            end_time_str = zone_end_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_end_dt) else "NaT"
+            
+            rpm_start_str = rpm_subset_df['Timestamp'].iloc[0].strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else start_time_str
+            rpm_end_str = rpm_subset_df['Timestamp'].iloc[-1].strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else end_time_str
+            
+            speed_start_str = speed_subset_df['Timestamp'].iloc[0].strftime("%Y-%m-%d %H:%M:%S") if not speed_subset_df.empty else start_time_str
+            speed_end_str = speed_subset_df['Timestamp'].iloc[-1].strftime("%Y-%m-%d %H:%M:%S") if not speed_subset_df.empty else end_time_str
+            
+            extracted_rows.append({
+                "Machine": machine_clean_name,
+                "Operator": operator,
+                "Compound": compound,
+                "Diameter": current_int_dia,
+                "Diameter Duration": diameter_duration_str,
+                "RPM": selected_int_rpm,
+                "Target Screw RPM": target_rpm_val,
+                "Minimum Screw RPM": min_screw_rpm_val,
+                "Maximum Screw RPM": max_screw_rpm_val,
+                "RPM Duration": rpm_duration_str,
+                "Speed": selected_int_speed,
+                "Minimum Speed": min_speed_val,
+                "Maximum Speed": max_speed_val,
+                "Speed Duration": speed_duration_str,
+                "Thickness": thickness,
+                "Start Date & Time": start_time_str,
+                "End Date & Time": end_time_str,
+                "Duration (Hours & Minutes)": duration_hm_str,
+                "Duration (Minutes)": duration_min_str,
+                "Prod_Date_Obj": (zone_start_dt - pd.Timedelta(hours=6)).date(),
+                "Zone_Start_Timestamp": zone_start_dt,
+                "RPM_Start_Time": rpm_start_str,
+                "RPM_End_Time": rpm_end_str,
+                "Speed_Start_Time": speed_start_str,
+                "Speed_End_Time": speed_end_str,
+                "dia_seconds_raw": dia_seconds
+            })
+
+        return extracted_rows, status_entry, file_input_dates, file_exclusions
+
+    # --- MAIN CONCURRENT PROCESSING PIPELINE ---
     def run_pipeline(zip_bytes, target_tuples):
         target_lookup = dict(target_tuples)
         all_extracted_rows = []
@@ -396,150 +542,29 @@ with tab1:
             st.session_state.zip_status = {"uploaded": "Yes", "total_files": len(valid_file_infos), "excel_read": 0, "csv_read": 0, "failed_files": 0}
             st.session_state.file_details = []
 
-            for file_info in valid_file_infos:
-                filename = file_info.filename
-                machine_clean_name = os.path.basename(filename).split(" - ")[-1].replace(".csv", "").replace(".xlsx", "").replace(".xls", "").strip()
-                
-                file_bytes = z.read(file_info.filename)
-                raw_continuous_df, _ = load_and_preprocess_file(file_bytes, filename, tracking_log)
-                
-                if raw_continuous_df.empty:
-                    continue
-                
-                raw_continuous_df['Compound'] = raw_continuous_df['Compound'].astype(str).str.strip().replace({'nan': np.nan, '': np.nan}).ffill().fillna("Unknown")
-                raw_continuous_df['Operator'] = raw_continuous_df['Operator'].astype(str).str.strip().replace({'nan': np.nan, '': np.nan}).ffill().fillna("Unknown")
-                raw_continuous_df['Thickness'] = raw_continuous_df['Thickness'].ffill().fillna(0)
+            # Pre-read bytes and process files concurrently using available CPU cores
+            max_workers = min(8, os.cpu_count() or 4)
+            futures = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for file_info in valid_file_infos:
+                    file_bytes = z.read(file_info.filename)
+                    futures.append(executor.submit(process_single_file, file_info.filename, file_bytes, target_lookup))
 
-                condition_dia = raw_continuous_df['Int_Diameter'] != raw_continuous_df['Int_Diameter'].shift()
-                condition_op  = raw_continuous_df['Operator'] != raw_continuous_df['Operator'].shift()
-                condition_cmp = raw_continuous_df['Compound'] != raw_continuous_df['Compound'].shift()
-                condition_thk = raw_continuous_df['Thickness'] != raw_continuous_df['Thickness'].shift()
-                
-                # High performance contiguous boundary indexing
-                change_mask = (condition_dia | condition_op | condition_cmp | condition_thk).to_numpy()
-                if len(change_mask) == 0:
-                    continue
-                change_mask[0] = False
-                split_indices = np.flatnonzero(change_mask)
-                block_starts = np.concatenate(([0], split_indices))
-                block_ends = np.concatenate((split_indices, [len(raw_continuous_df)]))
-                
-                for start_idx, end_idx in zip(block_starts, block_ends):
-                    if (end_idx - start_idx) <= 20:
-                        continue
-                        
-                    block_df = raw_continuous_df.iloc[start_idx:end_idx]
-                    
-                    zone_start_dt = block_df['Timestamp'].iloc[0]
-                    zone_end_dt = block_df['Timestamp'].iloc[-1]
-                    
-                    valid_mask = (
-                        (block_df['Diameter'] > 0) & 
-                        (block_df['Speed'] > 0) & 
-                        (block_df['Screw rpm'] > 0)
-                    )
-                    valid_records = block_df[valid_mask]
-                    
-                    if len(valid_records) <= 20:
-                        continue
-                        
-                    t_min = valid_records['Timestamp'].iloc[0]
-                    t_max = valid_records['Timestamp'].iloc[-1]
-                    dia_seconds = (t_max - t_min).total_seconds()
-                    
-                    if dia_seconds < 1200:
-                        continue
-                        
-                    diameter_duration_str = f"{len(valid_records)} minutes"
-                    duration_hm_str = parse_duration_hm(dia_seconds)
-                    duration_min_str = f"{math.ceil(dia_seconds / 60.0)} minutes"
-                    
-                    min_screw_rpm_val = valid_records['Screw rpm'].min()
-                    max_screw_rpm_val = valid_records['Screw rpm'].max()
-                    min_speed_val = valid_records['Speed'].min()
-                    max_speed_val = valid_records['Speed'].max()
-                    
-                    mode_rpm_series = valid_records['Int_RPM'].mode()
-                    if mode_rpm_series.empty:
-                        continue
-                    selected_int_rpm = mode_rpm_series.iloc[0]
-                    
-                    rpm_mask = (valid_records['Int_RPM'] - selected_int_rpm).abs() <= 1
-                    rpm_subset_df = valid_records[rpm_mask]
-                    if len(rpm_subset_df) <= 20:
-                        continue
-                        
-                    rpm_seconds = (rpm_subset_df['Timestamp'].iloc[-1] - rpm_subset_df['Timestamp'].iloc[0]).total_seconds()
-                    if rpm_seconds < 1200:
-                        continue
-                        
-                    rpm_duration_str = f"{len(rpm_subset_df)} minutes"
-                    
-                    mode_speed_series = rpm_subset_df['Int_Speed'].mode()
-                    if mode_speed_series.empty:
-                        continue
-                    selected_int_speed = mode_speed_series.iloc[0]
-                    
-                    speed_mask = (rpm_subset_df['Int_Speed'] - selected_int_speed).abs() <= 1
-                    speed_subset_df = rpm_subset_df[speed_mask]
-                    if len(speed_subset_df) <= 20:
-                        continue
-                        
-                    speed_seconds = (speed_subset_df['Timestamp'].iloc[-1] - speed_subset_df['Timestamp'].iloc[0]).total_seconds()
-                    if speed_seconds < 1200:
-                        continue
-                        
-                    speed_duration_str = f"{len(speed_subset_df)} minutes"
-                    
-                    def get_primary_value(series):
-                        modes = series.mode()
-                        return modes.iloc[0] if not modes.empty else (series.iloc[0] if not series.empty else "N/A")
-                        
-                    operator = get_primary_value(valid_records['Operator'])
-                    compound = get_primary_value(valid_records['Compound'])
-                    thickness = get_primary_value(valid_records['Thickness'])
-                    current_int_dia = int(valid_records['Int_Diameter'].iloc[0])
-                    
-                    comp_key = str(compound).strip().lower()
-                    target_rpm_val = target_lookup.get(comp_key, "N/A")
-                    
-                    start_time_str = zone_start_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_start_dt) else "NaT"
-                    end_time_str = zone_end_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_end_dt) else "NaT"
-                    
-                    rpm_start_str = rpm_subset_df['Timestamp'].iloc[0].strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else start_time_str
-                    rpm_end_str = rpm_subset_df['Timestamp'].iloc[-1].strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else end_time_str
-                    
-                    speed_start_str = speed_subset_df['Timestamp'].iloc[0].strftime("%Y-%m-%d %H:%M:%S") if not speed_subset_df.empty else start_time_str
-                    speed_end_str = speed_subset_df['Timestamp'].iloc[-1].strftime("%Y-%m-%d %H:%M:%S") if not speed_subset_df.empty else end_time_str
-                    
-                    all_extracted_rows.append({
-                        "Machine": machine_clean_name,
-                        "Operator": operator,
-                        "Compound": compound,
-                        "Diameter": current_int_dia,
-                        "Diameter Duration": diameter_duration_str,
-                        "RPM": selected_int_rpm,
-                        "Target Screw RPM": target_rpm_val,
-                        "Minimum Screw RPM": min_screw_rpm_val,
-                        "Maximum Screw RPM": max_screw_rpm_val,
-                        "RPM Duration": rpm_duration_str,
-                        "Speed": selected_int_speed,
-                        "Minimum Speed": min_speed_val,
-                        "Maximum Speed": max_speed_val,
-                        "Speed Duration": speed_duration_str,
-                        "Thickness": thickness,
-                        "Start Date & Time": start_time_str,
-                        "End Date & Time": end_time_str,
-                        "Duration (Hours & Minutes)": duration_hm_str,
-                        "Duration (Minutes)": duration_min_str,
-                        "Prod_Date_Obj": (zone_start_dt - pd.Timedelta(hours=6)).date(),
-                        "Zone_Start_Timestamp": zone_start_dt,
-                        "RPM_Start_Time": rpm_start_str,
-                        "RPM_End_Time": rpm_end_str,
-                        "Speed_Start_Time": speed_start_str,
-                        "Speed_End_Time": speed_end_str,
-                        "dia_seconds_raw": dia_seconds
-                    })
+                # Collect completed futures in original order to preserve determinism
+                for future in futures:
+                    extracted_rows, status_entry, file_input_dates, file_exclusions = future.result()
+                    st.session_state.file_details.append(status_entry)
+                    if status_entry["status"] == "Read Successfully":
+                        if status_entry["ext"] == '.csv':
+                            st.session_state.zip_status["csv_read"] += 1
+                        elif status_entry["ext"] in ['.xlsx', '.xls']:
+                            st.session_state.zip_status["excel_read"] += 1
+                    else:
+                        st.session_state.zip_status["failed_files"] += 1
+
+                    tracking_log["input_dates"].extend(file_input_dates)
+                    tracking_log["exclusions"].extend(file_exclusions)
+                    all_extracted_rows.extend(extracted_rows)
 
         return pd.DataFrame(all_extracted_rows), tracking_log
 
@@ -557,14 +582,18 @@ with tab1:
 
         file_signature = (uploaded_file.name, uploaded_file.size, target_tuples)
         if "cached_file_signature" not in st.session_state or st.session_state["cached_file_signature"] != file_signature:
-            with st.spinner("⚡ Processing machine dataset..."):
+            with st.spinner("⚡ Fast multi-core processing machine dataset..."):
                 master_df, tracking_log = run_pipeline(uploaded_file.getvalue(), target_tuples)
                 st.session_state["cached_file_signature"] = file_signature
                 st.session_state["cached_master_df"] = master_df
                 st.session_state["cached_tracking_log"] = tracking_log
+                st.session_state["cached_zip_status"] = st.session_state.zip_status
+                st.session_state["cached_file_details"] = st.session_state.file_details
         else:
             master_df = st.session_state["cached_master_df"]
             tracking_log = st.session_state["cached_tracking_log"]
+            st.session_state.zip_status = st.session_state["cached_zip_status"]
+            st.session_state.file_details = st.session_state["cached_file_details"]
 
         columns_ordered = [
             "Machine", "Operator", "Compound", "Diameter", "Diameter Duration", 
