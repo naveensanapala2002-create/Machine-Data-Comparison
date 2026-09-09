@@ -181,12 +181,19 @@ with tab1:
             
         s = clean_series[valid_mask]
         
-        # 1. 12-Hour AM/PM timestamps
-        am_pm_mask = s.str.contains(r'(?i)\b(?:am|pm)\b')
-        if am_pm_mask.any():
-            parsed.loc[s[am_pm_mask].index] = pd.to_datetime(s[am_pm_mask], errors='coerce')
+        # 1. Direct fast-path for standard ISO timestamps
+        parsed_iso = pd.to_datetime(s, format='ISO8601', errors='coerce')
+        parsed.loc[s.index] = parsed_iso
+        
+        # 2. 12-Hour AM/PM timestamps
+        rem_mask = valid_mask & parsed.isna()
+        if rem_mask.any():
+            s_rem = clean_series[rem_mask]
+            am_pm_mask = s_rem.str.contains(r'(?i)\b(?:am|pm)\b')
+            if am_pm_mask.any():
+                parsed.loc[s_rem[am_pm_mask].index] = pd.to_datetime(s_rem[am_pm_mask], errors='coerce')
             
-        # 2. Industrial YYYY-DD-MM sequences
+        # 3. Industrial YYYY-DD-MM sequences
         rem_mask = valid_mask & parsed.isna()
         if rem_mask.any():
             s_rem = clean_series[rem_mask]
@@ -198,16 +205,7 @@ with tab1:
                     errors='coerce'
                 )
                 
-        # 3. ISO 8601, Milliseconds, Timezones, and Standard Mixed Formats
-        rem_mask = valid_mask & parsed.isna()
-        if rem_mask.any():
-            s_rem = clean_series[rem_mask]
-            dt_mixed = pd.to_datetime(s_rem, format='mixed', errors='coerce')
-            if hasattr(dt_mixed.dt, 'tz') and dt_mixed.dt.tz is not None:
-                dt_mixed = dt_mixed.dt.tz_localize(None)
-            parsed.loc[s_rem.index] = dt_mixed
-            
-        # 4. Sequential Formatted Fallbacks for remaining edge cases
+        # 4. Sequential Fallbacks with direct explicit formats
         rem_mask = valid_mask & parsed.isna()
         if rem_mask.any():
             s_rem = clean_series[rem_mask]
@@ -230,15 +228,18 @@ with tab1:
                 subset = norm.loc[unparsed_mask[unparsed_mask].index]
                 parsed.loc[subset.index] = pd.to_datetime(subset, format=fmt, errors='coerce')
                 
-        # 5. Final fallback
+        # 5. Fallback for remaining arbitrary mixed/tz formats
         rem_mask = valid_mask & parsed.isna()
         if rem_mask.any():
             s_rem = clean_series[rem_mask]
-            parsed.loc[s_rem.index] = pd.to_datetime(s_rem, errors='coerce')
+            dt_mixed = pd.to_datetime(s_rem, format='mixed', errors='coerce')
+            if hasattr(dt_mixed.dt, 'tz') and dt_mixed.dt.tz is not None:
+                dt_mixed = dt_mixed.dt.tz_localize(None)
+            parsed.loc[s_rem.index] = dt_mixed
             
         return parsed
 
-    def load_and_preprocess_file(file_bytes, filepath, tracking_log=None):
+    def load_and_preprocess_file(file_obj, filepath, tracking_log=None):
         filename = os.path.basename(filepath)
         ext = os.path.splitext(filename)[1].lower()
         
@@ -246,10 +247,10 @@ with tab1:
         
         try:
             if ext == '.csv':
-                df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+                df = pd.read_csv(file_obj, dtype=str)
                 st.session_state.zip_status["csv_read"] += 1
             elif ext in ['.xlsx', '.xls']:
-                df = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
+                df = pd.read_excel(file_obj, dtype=str)
                 st.session_state.zip_status["excel_read"] += 1
             else:
                 status_entry["reason"] = "Unsupported format"
@@ -315,9 +316,10 @@ with tab1:
             detected_prod_dates = {d for d in df['Production_Date'].unique() if pd.notnull(d)}
             status_entry["available_dates"] = detected_prod_dates
 
-            df['Int_Diameter'] = df['Diameter'].apply(lambda x: math.trunc(float(x)) if pd.notnull(x) and str(x).strip() != "" else np.nan)
-            df['Int_Speed'] = df['Speed'].apply(lambda x: math.trunc(float(x)) if pd.notnull(x) and str(x).strip() != "" else np.nan)
-            df['Int_RPM'] = df['Screw rpm'].apply(lambda x: math.trunc(float(x)) if pd.notnull(x) and str(x).strip() != "" else np.nan)
+            # Fast vectorized truncation via NumPy
+            df['Int_Diameter'] = np.trunc(df['Diameter'])
+            df['Int_Speed'] = np.trunc(df['Speed'])
+            df['Int_RPM'] = np.trunc(df['Screw rpm'])
             
             df = df.dropna(subset=['Int_Diameter']).reset_index(drop=True)
             
@@ -338,22 +340,20 @@ with tab1:
         tracking_log = {"input_dates": [], "exclusions": []}
         
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-            infolist = z.infolist()
-            zip_bytes_cached = {}
-            for file_info in infolist:
-                if not file_info.is_dir() and '__MACOSX' not in file_info.filename:
-                    filename = file_info.filename
-                    ext = os.path.splitext(filename)[1].lower()
-                    if ext in ['.csv', '.xlsx', '.xls']:
-                        file_bytes = z.read(filename)
-                        zip_bytes_cached[filename] = file_bytes
+            valid_file_infos = [
+                info for info in z.infolist() 
+                if not info.is_dir() and '__MACOSX' not in info.filename and os.path.splitext(info.filename)[1].lower() in ['.csv', '.xlsx', '.xls']
+            ]
 
-            st.session_state.zip_status = {"uploaded": "Yes", "total_files": len(zip_bytes_cached), "excel_read": 0, "csv_read": 0, "failed_files": 0}
+            st.session_state.zip_status = {"uploaded": "Yes", "total_files": len(valid_file_infos), "excel_read": 0, "csv_read": 0, "failed_files": 0}
             st.session_state.file_details = []
 
-            for filename, file_bytes in zip_bytes_cached.items():
+            for file_info in valid_file_infos:
+                filename = file_info.filename
                 machine_clean_name = os.path.basename(filename).split(" - ")[-1].replace(".csv", "").replace(".xlsx", "").replace(".xls", "").strip()
-                raw_continuous_df, _ = load_and_preprocess_file(file_bytes, filename, tracking_log)
+                
+                with z.open(file_info) as file_obj:
+                    raw_continuous_df, _ = load_and_preprocess_file(file_obj, filename, tracking_log)
                 
                 if raw_continuous_df.empty:
                     continue
@@ -381,7 +381,7 @@ with tab1:
                         (block_df['Diameter'] > 0) & 
                         (block_df['Speed'] > 0) & 
                         (block_df['Screw rpm'] > 0)
-                    ].copy()
+                    ]
                     
                     if len(valid_records) <= 20:
                         continue
