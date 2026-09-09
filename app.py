@@ -171,7 +171,13 @@ with tab1:
     if "file_details" not in st.session_state:
         st.session_state.file_details = []
 
-    def fast_parse_timestamp(series, filepath=""):
+    def fast_mode_scalar(series):
+        if series.empty:
+            return None
+        vc = series.value_counts(sort=True)
+        return vc.index[0] if not vc.empty else None
+
+    def fast_parse_timestamp(series):
         clean_series = series.astype(str).str.strip()
         parsed = pd.Series(pd.NaT, index=series.index, dtype='datetime64[ns]')
         
@@ -181,9 +187,8 @@ with tab1:
             
         s = clean_series[valid_mask]
         
-        # 1. Direct fast-path for standard ISO timestamps
-        parsed_iso = pd.to_datetime(s, format='ISO8601', errors='coerce')
-        parsed.loc[s.index] = parsed_iso
+        # 1. Fast vector parser for standard ISO sequences
+        parsed.update(pd.to_datetime(s, format='ISO8601', errors='coerce'))
         
         # 2. 12-Hour AM/PM timestamps
         rem_mask = valid_mask & parsed.isna()
@@ -191,7 +196,7 @@ with tab1:
             s_rem = clean_series[rem_mask]
             am_pm_mask = s_rem.str.contains(r'(?i)\b(?:am|pm)\b')
             if am_pm_mask.any():
-                parsed.loc[s_rem[am_pm_mask].index] = pd.to_datetime(s_rem[am_pm_mask], errors='coerce')
+                parsed.update(pd.to_datetime(s_rem[am_pm_mask], errors='coerce'))
             
         # 3. Industrial YYYY-DD-MM sequences
         rem_mask = valid_mask & parsed.isna()
@@ -199,13 +204,13 @@ with tab1:
             s_rem = clean_series[rem_mask]
             ydm_mask = s_rem.str.match(r'^\d{4}[-/]\d{2}[-/](?:07|08)(?:\s|$)')
             if ydm_mask.any():
-                parsed.loc[s_rem[ydm_mask].index] = pd.to_datetime(
+                parsed.update(pd.to_datetime(
                     s_rem[ydm_mask].str.replace('/', '-'), 
                     format='%Y-%d-%m %H:%M:%S', 
                     errors='coerce'
-                )
+                ))
                 
-        # 4. Sequential Fallbacks with direct explicit formats
+        # 4. Explicit fallback chains
         rem_mask = valid_mask & parsed.isna()
         if rem_mask.any():
             s_rem = clean_series[rem_mask]
@@ -226,16 +231,16 @@ with tab1:
                 if not unparsed_mask.any():
                     break
                 subset = norm.loc[unparsed_mask[unparsed_mask].index]
-                parsed.loc[subset.index] = pd.to_datetime(subset, format=fmt, errors='coerce')
+                parsed.update(pd.to_datetime(subset, format=fmt, errors='coerce'))
                 
-        # 5. Fallback for remaining arbitrary mixed/tz formats
+        # 5. Final fallback
         rem_mask = valid_mask & parsed.isna()
         if rem_mask.any():
             s_rem = clean_series[rem_mask]
             dt_mixed = pd.to_datetime(s_rem, format='mixed', errors='coerce')
             if hasattr(dt_mixed.dt, 'tz') and dt_mixed.dt.tz is not None:
                 dt_mixed = dt_mixed.dt.tz_localize(None)
-            parsed.loc[s_rem.index] = dt_mixed
+            parsed.update(dt_mixed)
             
         return parsed
 
@@ -247,10 +252,10 @@ with tab1:
         
         try:
             if ext == '.csv':
-                df = pd.read_csv(file_obj, dtype=str)
+                df = pd.read_csv(file_obj, low_memory=False)
                 st.session_state.zip_status["csv_read"] += 1
             elif ext in ['.xlsx', '.xls']:
-                df = pd.read_excel(file_obj, dtype=str)
+                df = pd.read_excel(file_obj)
                 st.session_state.zip_status["excel_read"] += 1
             else:
                 status_entry["reason"] = "Unsupported format"
@@ -287,7 +292,7 @@ with tab1:
             df = df.rename(columns=col_mapping)
                 
             raw_dates = df['Timestamp'].copy()
-            df['Timestamp'] = fast_parse_timestamp(df['Timestamp'], filepath)
+            df['Timestamp'] = fast_parse_timestamp(df['Timestamp'])
 
             # Report unparseable values with complete metadata
             if tracking_log is not None:
@@ -316,7 +321,6 @@ with tab1:
             detected_prod_dates = {d for d in df['Production_Date'].unique() if pd.notnull(d)}
             status_entry["available_dates"] = detected_prod_dates
 
-            # Fast vectorized truncation via NumPy
             df['Int_Diameter'] = np.trunc(df['Diameter'])
             df['Int_Speed'] = np.trunc(df['Speed'])
             df['Int_RPM'] = np.trunc(df['Screw rpm'])
@@ -333,9 +337,9 @@ with tab1:
             st.session_state.file_details.append(status_entry)
             return pd.DataFrame(), set()
 
-    # --- CACHED MAIN EXTRACTION FUNCTION ---
-    @st.cache_data(show_spinner="⚡ Fast Processing Machine Data from ZIP...")
-    def process_zip_payload(zip_bytes, target_lookup):
+    # --- MAIN CACHED PROCESSING PIPELINE ---
+    def run_pipeline(zip_bytes, target_tuples):
+        target_lookup = dict(target_tuples)
         all_extracted_rows = []
         tracking_log = {"input_dates": [], "exclusions": []}
         
@@ -358,7 +362,6 @@ with tab1:
                 if raw_continuous_df.empty:
                     continue
                 
-                # Forward fill metadata
                 raw_continuous_df['Compound'] = raw_continuous_df['Compound'].astype(str).str.strip().replace({'nan': np.nan, '': np.nan}).ffill().fillna("Unknown")
                 raw_continuous_df['Operator'] = raw_continuous_df['Operator'].astype(str).str.strip().replace({'nan': np.nan, '': np.nan}).ffill().fillna("Unknown")
                 raw_continuous_df['Thickness'] = raw_continuous_df['Thickness'].ffill().fillna(0)
@@ -370,23 +373,28 @@ with tab1:
                 
                 raw_continuous_df['Zone_Block'] = (condition_dia | condition_op | condition_cmp | condition_thk).cumsum()
                 
-                for _, block_df in raw_continuous_df.groupby('Zone_Block'):
+                # Group by Zone_Block directly using contiguous boundary indices
+                block_groups = raw_continuous_df.groupby('Zone_Block', sort=False)
+                for _, block_df in block_groups:
                     if len(block_df) <= 20:
                         continue
                         
-                    zone_start_dt = block_df['Timestamp'].min()
-                    zone_end_dt = block_df['Timestamp'].max()
+                    zone_start_dt = block_df['Timestamp'].iloc[0]
+                    zone_end_dt = block_df['Timestamp'].iloc[-1]
                     
-                    valid_records = block_df[
+                    valid_mask = (
                         (block_df['Diameter'] > 0) & 
                         (block_df['Speed'] > 0) & 
                         (block_df['Screw rpm'] > 0)
-                    ]
+                    )
+                    valid_records = block_df[valid_mask]
                     
                     if len(valid_records) <= 20:
                         continue
                         
-                    dia_seconds = (valid_records['Timestamp'].max() - valid_records['Timestamp'].min()).total_seconds()
+                    t_min = valid_records['Timestamp'].iloc[0]
+                    t_max = valid_records['Timestamp'].iloc[-1]
+                    dia_seconds = (t_max - t_min).total_seconds()
                     
                     if dia_seconds < 1200:
                         continue
@@ -400,31 +408,31 @@ with tab1:
                     min_speed_val = valid_records['Speed'].min()
                     max_speed_val = valid_records['Speed'].max()
                     
-                    mode_rpm_series = valid_records['Int_RPM'].mode()
-                    if mode_rpm_series.empty:
+                    selected_int_rpm = fast_mode_scalar(valid_records['Int_RPM'])
+                    if selected_int_rpm is None:
                         continue
-                    selected_int_rpm = mode_rpm_series.iloc[0]
                     
-                    rpm_subset_df = valid_records[(valid_records['Int_RPM'] - selected_int_rpm).abs() <= 1]
+                    rpm_mask = (valid_records['Int_RPM'] - selected_int_rpm).abs() <= 1
+                    rpm_subset_df = valid_records[rpm_mask]
                     if len(rpm_subset_df) <= 20:
                         continue
                         
-                    rpm_seconds = (rpm_subset_df['Timestamp'].max() - rpm_subset_df['Timestamp'].min()).total_seconds()
+                    rpm_seconds = (rpm_subset_df['Timestamp'].iloc[-1] - rpm_subset_df['Timestamp'].iloc[0]).total_seconds()
                     if rpm_seconds < 1200:
                         continue
                         
                     rpm_duration_str = f"{len(rpm_subset_df)} minutes"
                     
-                    mode_speed_series = rpm_subset_df['Int_Speed'].mode()
-                    if mode_speed_series.empty:
+                    selected_int_speed = fast_mode_scalar(rpm_subset_df['Int_Speed'])
+                    if selected_int_speed is None:
                         continue
-                    selected_int_speed = mode_speed_series.iloc[0]
                     
-                    speed_subset_df = rpm_subset_df[(rpm_subset_df['Int_Speed'] - selected_int_speed).abs() <= 1]
+                    speed_mask = (rpm_subset_df['Int_Speed'] - selected_int_speed).abs() <= 1
+                    speed_subset_df = rpm_subset_df[speed_mask]
                     if len(speed_subset_df) <= 20:
                         continue
                         
-                    speed_seconds = (speed_subset_df['Timestamp'].max() - speed_subset_df['Timestamp'].min()).total_seconds()
+                    speed_seconds = (speed_subset_df['Timestamp'].iloc[-1] - speed_subset_df['Timestamp'].iloc[0]).total_seconds()
                     if speed_seconds < 1200:
                         continue
                         
@@ -445,11 +453,11 @@ with tab1:
                     start_time_str = zone_start_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_start_dt) else "NaT"
                     end_time_str = zone_end_dt.strftime("%Y-%m-%d %H:%M:%S") if pd.notnull(zone_end_dt) else "NaT"
                     
-                    rpm_start_str = rpm_subset_df['Timestamp'].min().strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else start_time_str
-                    rpm_end_str = rpm_subset_df['Timestamp'].max().strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else end_time_str
+                    rpm_start_str = rpm_subset_df['Timestamp'].iloc[0].strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else start_time_str
+                    rpm_end_str = rpm_subset_df['Timestamp'].iloc[-1].strftime("%Y-%m-%d %H:%M:%S") if not rpm_subset_df.empty else end_time_str
                     
-                    speed_start_str = speed_subset_df['Timestamp'].min().strftime("%Y-%m-%d %H:%M:%S") if not speed_subset_df.empty else start_time_str
-                    speed_end_str = speed_subset_df['Timestamp'].max().strftime("%Y-%m-%d %H:%M:%S") if not speed_subset_df.empty else end_time_str
+                    speed_start_str = speed_subset_df['Timestamp'].iloc[0].strftime("%Y-%m-%d %H:%M:%S") if not speed_subset_df.empty else start_time_str
+                    speed_end_str = speed_subset_df['Timestamp'].iloc[-1].strftime("%Y-%m-%d %H:%M:%S") if not speed_subset_df.empty else end_time_str
                     
                     all_extracted_rows.append({
                         "Machine": machine_clean_name,
@@ -483,17 +491,28 @@ with tab1:
         return pd.DataFrame(all_extracted_rows), tracking_log
 
     if uploaded_file is not None:
-        target_lookup = {}
+        target_list = []
         if "target_df" in st.session_state and not st.session_state["target_df"].empty:
             for _, r in st.session_state["target_df"].iterrows():
                 comp_key = str(r["Compound"]).strip().lower()
                 try:
                     val = float(r["Target Screw RPM"])
-                    target_lookup[comp_key] = int(val) if val.is_integer() else val
+                    target_list.append((comp_key, int(val) if val.is_integer() else val))
                 except (ValueError, TypeError):
                     pass
+        target_tuples = tuple(target_list)
 
-        master_df, tracking_log = process_zip_payload(uploaded_file.getvalue(), target_lookup)
+        # Cache file processing in session state by file signature to avoid unnecessary recalculations
+        file_signature = (uploaded_file.name, uploaded_file.size, target_tuples)
+        if "cached_file_signature" not in st.session_state or st.session_state["cached_file_signature"] != file_signature:
+            with st.spinner("⚡ Processing machine dataset..."):
+                master_df, tracking_log = run_pipeline(uploaded_file.getvalue(), target_tuples)
+                st.session_state["cached_file_signature"] = file_signature
+                st.session_state["cached_master_df"] = master_df
+                st.session_state["cached_tracking_log"] = tracking_log
+        else:
+            master_df = st.session_state["cached_master_df"]
+            tracking_log = st.session_state["cached_tracking_log"]
 
         columns_ordered = [
             "Machine", "Operator", "Compound", "Diameter", "Diameter Duration", 
@@ -564,7 +583,6 @@ with tab1:
             st.markdown("---")
             st.subheader("📋 Diameter Zone Verification Table")
             
-            # Deduplicate runs having identical machine, compound, diameter, RPM, and speed while keeping the longest duration
             p3_df = filtered_df.sort_values(by=["dia_seconds_raw"], ascending=False).drop_duplicates(
                 subset=["Machine", "Diameter", "Compound", "RPM", "Speed"]
             ).sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
@@ -576,7 +594,6 @@ with tab1:
             st.markdown("---")
             st.subheader("📊 Cross-Machine Operating Parameters Comparison Table")
             
-            # Group by physical comparative targets (Diameter, Machine, Compound) to prevent repeating identical parameters
             p4_df = filtered_df.sort_values(by=["dia_seconds_raw"], ascending=False).drop_duplicates(
                 subset=["Diameter", "Machine", "Compound"]
             ).sort_values(by=["Diameter", "Machine", "RPM"], ascending=[True, True, True]).reset_index(drop=True)
@@ -584,7 +601,6 @@ with tab1:
             p4_select = st.dataframe(p4_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="table_2")
             display_selection_window(p4_select, p4_df)
             
-            # Master Exporter CSV Utility Buffer for Table 2
             csv_buffer = io.StringIO()
             p4_df[columns_ordered].to_csv(csv_buffer, index=False)
             st.download_button(
@@ -613,7 +629,6 @@ with tab1:
             p5_select = st.dataframe(p5_df[columns_ordered], use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row", key="table_3")
             display_selection_window(p5_select, p5_df)
             
-            # Exporter CSV Utility Buffer for Table 3
             csv_buffer3 = io.StringIO()
             p5_df[columns_ordered].to_csv(csv_buffer3, index=False)
             st.download_button(
