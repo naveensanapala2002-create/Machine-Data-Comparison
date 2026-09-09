@@ -171,12 +171,6 @@ with tab1:
     if "file_details" not in st.session_state:
         st.session_state.file_details = []
 
-    def fast_mode_scalar(series):
-        if series.empty:
-            return None
-        vc = series.value_counts(sort=True)
-        return vc.index[0] if not vc.empty else None
-
     def fast_parse_timestamp(series):
         clean_series = series.astype(str).str.strip()
         parsed = pd.Series(pd.NaT, index=series.index, dtype='datetime64[ns]')
@@ -185,36 +179,77 @@ with tab1:
         if not valid_mask.any():
             return parsed
             
-        s = clean_series[valid_mask]
+        unique_vals = clean_series[valid_mask].drop_duplicates()
+        u_parsed = pd.Series(pd.NaT, index=unique_vals.index, dtype='datetime64[ns]')
+        u_str = unique_vals
         
-        # 1. Fast vector parser for standard ISO sequences
-        parsed.update(pd.to_datetime(s, format='ISO8601', errors='coerce'))
-        
-        # 2. 12-Hour AM/PM timestamps
-        rem_mask = valid_mask & parsed.isna()
-        if rem_mask.any():
-            s_rem = clean_series[rem_mask]
-            am_pm_mask = s_rem.str.contains(r'(?i)\b(?:am|pm)\b')
-            if am_pm_mask.any():
-                parsed.update(pd.to_datetime(s_rem[am_pm_mask], errors='coerce'))
+        # 1. 12-Hour AM/PM timestamps
+        am_pm_mask = u_str.str.contains(r'(?i)\b(?:am|pm)\b')
+        if am_pm_mask.any():
+            matched_idx = am_pm_mask[am_pm_mask].index
+            u_parsed.loc[matched_idx] = pd.to_datetime(u_str.loc[matched_idx], errors='coerce')
             
-        # 3. Industrial YYYY-DD-MM sequences
-        rem_mask = valid_mask & parsed.isna()
+        # 2. Industrial YYYY-DD-MM sequences
+        rem_mask = u_parsed.isna()
         if rem_mask.any():
-            s_rem = clean_series[rem_mask]
-            ydm_mask = s_rem.str.match(r'^\d{4}[-/]\d{2}[-/](?:07|08)(?:\s|$)')
+            u_rem = u_str[rem_mask]
+            ydm_mask = u_rem.str.match(r'^\d{4}[-/]\d{2}[-/](?:07|08)(?:\s|$)')
             if ydm_mask.any():
-                parsed.update(pd.to_datetime(
-                    s_rem[ydm_mask].str.replace('/', '-'), 
+                matched_idx = ydm_mask[ydm_mask].index
+                u_parsed.loc[matched_idx] = pd.to_datetime(
+                    u_rem.loc[matched_idx].str.replace('/', '-'), 
                     format='%Y-%d-%m %H:%M:%S', 
                     errors='coerce'
-                ))
+                )
                 
-        # 4. Explicit fallback chains
-        rem_mask = valid_mask & parsed.isna()
+        # 3. Direct sample-based format detection for standard sequences
+        rem_mask = u_parsed.isna()
         if rem_mask.any():
-            s_rem = clean_series[rem_mask]
-            norm = s_rem.str.replace('/', '-').str.replace('.', '-')
+            u_rem = u_str[rem_mask]
+            sample = u_rem.iloc[:min(40, len(u_rem))]
+            
+            candidates = [
+                "%d-%m-%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y/%m/%d %H:%M:%S",
+                "%d-%m-%Y %H:%M",
+                "%d/%m/%Y %H:%M",
+                "%Y-%m-%d %H:%M",
+                "%Y/%m/%d %H:%M",
+                "%m-%d-%Y %H:%M:%S",
+                "%m/%d/%Y %H:%M:%S",
+                "%m-%d-%Y %H:%M",
+                "%m/%d/%Y %H:%M",
+                "%Y-%d-%m %H:%M:%S",
+                "%Y-%d-%m %H:%M"
+            ]
+            
+            best_fmt = None
+            for fmt in candidates:
+                res = pd.to_datetime(sample, format=fmt, errors='coerce')
+                if res.notna().all():
+                    best_fmt = fmt
+                    break
+                    
+            if best_fmt is not None:
+                parsed_fast = pd.to_datetime(u_rem, format=best_fmt, errors='coerce')
+                u_parsed.loc[u_rem.index] = parsed_fast
+
+        # 4. Standard ISO 8601 fallback
+        rem_mask = u_parsed.isna()
+        if rem_mask.any():
+            u_rem = u_str[rem_mask]
+            dt_iso = pd.to_datetime(u_rem, format='ISO8601', errors='coerce')
+            iso_valid = dt_iso.notna()
+            if iso_valid.any():
+                u_parsed.loc[u_rem[iso_valid].index] = dt_iso[iso_valid]
+                
+        # 5. Fallback chains
+        rem_mask = u_parsed.isna()
+        if rem_mask.any():
+            u_rem = u_str[rem_mask]
+            norm = u_rem.str.replace('/', '-').str.replace('.', '-')
             fallback_formats = [
                 "%d-%m-%Y %H:%M:%S",
                 "%d-%m-%Y %I:%M:%S %p",
@@ -227,24 +262,29 @@ with tab1:
                 "%Y-%d-%m %H:%M"
             ]
             for fmt in fallback_formats:
-                unparsed_mask = valid_mask & parsed.isna()
-                if not unparsed_mask.any():
+                unp = u_parsed.isna()
+                if not unp.any():
                     break
-                subset = norm.loc[unparsed_mask[unparsed_mask].index]
-                parsed.update(pd.to_datetime(subset, format=fmt, errors='coerce'))
-                
-        # 5. Final fallback
-        rem_mask = valid_mask & parsed.isna()
+                subset = norm.loc[unp[unp].index]
+                parsed_subset = pd.to_datetime(subset, format=fmt, errors='coerce')
+                ok = parsed_subset.notna()
+                if ok.any():
+                    u_parsed.loc[subset[ok].index] = parsed_subset[ok]
+                    
+        # 6. Final fallback
+        rem_mask = u_parsed.isna()
         if rem_mask.any():
-            s_rem = clean_series[rem_mask]
-            dt_mixed = pd.to_datetime(s_rem, format='mixed', errors='coerce')
+            u_rem = u_str[rem_mask]
+            dt_mixed = pd.to_datetime(u_rem, format='mixed', errors='coerce')
             if hasattr(dt_mixed.dt, 'tz') and dt_mixed.dt.tz is not None:
                 dt_mixed = dt_mixed.dt.tz_localize(None)
-            parsed.update(dt_mixed)
+            u_parsed.loc[u_rem.index] = dt_mixed
             
+        mapping = dict(zip(unique_vals, u_parsed))
+        parsed.loc[valid_mask] = clean_series[valid_mask].map(mapping)
         return parsed
 
-    def load_and_preprocess_file(file_obj, filepath, tracking_log=None):
+    def load_and_preprocess_file(file_bytes, filepath, tracking_log=None):
         filename = os.path.basename(filepath)
         ext = os.path.splitext(filename)[1].lower()
         
@@ -252,10 +292,10 @@ with tab1:
         
         try:
             if ext == '.csv':
-                df = pd.read_csv(file_obj, low_memory=False)
+                df = pd.read_csv(io.BytesIO(file_bytes), low_memory=False)
                 st.session_state.zip_status["csv_read"] += 1
             elif ext in ['.xlsx', '.xls']:
-                df = pd.read_excel(file_obj)
+                df = pd.read_excel(io.BytesIO(file_bytes))
                 st.session_state.zip_status["excel_read"] += 1
             else:
                 status_entry["reason"] = "Unsupported format"
@@ -289,13 +329,15 @@ with tab1:
                 st.session_state.file_details.append(status_entry)
                 return pd.DataFrame(), set()
                 
-            df = df.rename(columns=col_mapping)
+            # Immediately keep only required columns to eliminate overhead from unused sensors
+            keep_cols = list(col_mapping.keys())
+            df = df[keep_cols].rename(columns=col_mapping)
                 
             raw_dates = df['Timestamp'].copy()
             df['Timestamp'] = fast_parse_timestamp(df['Timestamp'])
 
-            # Report unparseable values with complete metadata
-            if tracking_log is not None:
+            # Report unparseable values with complete metadata only when NaT exists
+            if tracking_log is not None and df['Timestamp'].isna().any():
                 invalid_mask = df['Timestamp'].isna() & ~raw_dates.isna() & ~raw_dates.astype(str).str.strip().str.lower().isin(['nan', 'nat', '', 'none', 'null'])
                 if invalid_mask.any():
                     for idx in df[invalid_mask].index:
@@ -308,16 +350,18 @@ with tab1:
                             "Error Reason": "Unparseable date/time format"
                         })
 
-            df = df.dropna(subset=['Timestamp']).sort_values('Timestamp').reset_index(drop=True)
+            df = df.dropna(subset=['Timestamp'])
+            if not df['Timestamp'].is_monotonic_increasing:
+                df = df.sort_values('Timestamp')
+            df = df.reset_index(drop=True)
             
             if not df.empty and tracking_log is not None:
-                tracking_log["input_dates"].append((df['Timestamp'].min(), df['Timestamp'].max(), filename))
+                tracking_log["input_dates"].append((df['Timestamp'].iloc[0], df['Timestamp'].iloc[-1], filename))
 
             for col in ['Speed', 'Screw rpm', 'Thickness', 'Diameter']:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             
             df['Production_Date'] = (df['Timestamp'] - pd.Timedelta(hours=6)).dt.date
-            
             detected_prod_dates = {d for d in df['Production_Date'].unique() if pd.notnull(d)}
             status_entry["available_dates"] = detected_prod_dates
 
@@ -337,7 +381,7 @@ with tab1:
             st.session_state.file_details.append(status_entry)
             return pd.DataFrame(), set()
 
-    # --- MAIN CACHED PROCESSING PIPELINE ---
+    # --- MAIN FAST PROCESSING PIPELINE ---
     def run_pipeline(zip_bytes, target_tuples):
         target_lookup = dict(target_tuples)
         all_extracted_rows = []
@@ -356,8 +400,8 @@ with tab1:
                 filename = file_info.filename
                 machine_clean_name = os.path.basename(filename).split(" - ")[-1].replace(".csv", "").replace(".xlsx", "").replace(".xls", "").strip()
                 
-                with z.open(file_info) as file_obj:
-                    raw_continuous_df, _ = load_and_preprocess_file(file_obj, filename, tracking_log)
+                file_bytes = z.read(file_info.filename)
+                raw_continuous_df, _ = load_and_preprocess_file(file_bytes, filename, tracking_log)
                 
                 if raw_continuous_df.empty:
                     continue
@@ -371,14 +415,21 @@ with tab1:
                 condition_cmp = raw_continuous_df['Compound'] != raw_continuous_df['Compound'].shift()
                 condition_thk = raw_continuous_df['Thickness'] != raw_continuous_df['Thickness'].shift()
                 
-                raw_continuous_df['Zone_Block'] = (condition_dia | condition_op | condition_cmp | condition_thk).cumsum()
+                # High performance contiguous boundary indexing
+                change_mask = (condition_dia | condition_op | condition_cmp | condition_thk).to_numpy()
+                if len(change_mask) == 0:
+                    continue
+                change_mask[0] = False
+                split_indices = np.flatnonzero(change_mask)
+                block_starts = np.concatenate(([0], split_indices))
+                block_ends = np.concatenate((split_indices, [len(raw_continuous_df)]))
                 
-                # Group by Zone_Block directly using contiguous boundary indices
-                block_groups = raw_continuous_df.groupby('Zone_Block', sort=False)
-                for _, block_df in block_groups:
-                    if len(block_df) <= 20:
+                for start_idx, end_idx in zip(block_starts, block_ends):
+                    if (end_idx - start_idx) <= 20:
                         continue
                         
+                    block_df = raw_continuous_df.iloc[start_idx:end_idx]
+                    
                     zone_start_dt = block_df['Timestamp'].iloc[0]
                     zone_end_dt = block_df['Timestamp'].iloc[-1]
                     
@@ -408,9 +459,10 @@ with tab1:
                     min_speed_val = valid_records['Speed'].min()
                     max_speed_val = valid_records['Speed'].max()
                     
-                    selected_int_rpm = fast_mode_scalar(valid_records['Int_RPM'])
-                    if selected_int_rpm is None:
+                    mode_rpm_series = valid_records['Int_RPM'].mode()
+                    if mode_rpm_series.empty:
                         continue
+                    selected_int_rpm = mode_rpm_series.iloc[0]
                     
                     rpm_mask = (valid_records['Int_RPM'] - selected_int_rpm).abs() <= 1
                     rpm_subset_df = valid_records[rpm_mask]
@@ -423,9 +475,10 @@ with tab1:
                         
                     rpm_duration_str = f"{len(rpm_subset_df)} minutes"
                     
-                    selected_int_speed = fast_mode_scalar(rpm_subset_df['Int_Speed'])
-                    if selected_int_speed is None:
+                    mode_speed_series = rpm_subset_df['Int_Speed'].mode()
+                    if mode_speed_series.empty:
                         continue
+                    selected_int_speed = mode_speed_series.iloc[0]
                     
                     speed_mask = (rpm_subset_df['Int_Speed'] - selected_int_speed).abs() <= 1
                     speed_subset_df = rpm_subset_df[speed_mask]
@@ -502,7 +555,6 @@ with tab1:
                     pass
         target_tuples = tuple(target_list)
 
-        # Cache file processing in session state by file signature to avoid unnecessary recalculations
         file_signature = (uploaded_file.name, uploaded_file.size, target_tuples)
         if "cached_file_signature" not in st.session_state or st.session_state["cached_file_signature"] != file_signature:
             with st.spinner("⚡ Processing machine dataset..."):
