@@ -395,6 +395,11 @@ with tab1:
                     duration_hm_str = parse_duration_hm(dia_seconds)
                     duration_min_str = f"{math.ceil(dia_seconds / 60.0)} minutes"
                     
+                    min_screw_rpm_val = valid_records['Screw rpm'].min()
+                    max_screw_rpm_val = valid_records['Screw rpm'].max()
+                    min_speed_val = valid_records['Speed'].min()
+                    max_speed_val = valid_records['Speed'].max()
+                    
                     mode_rpm_series = valid_records['Int_RPM'].mode()
                     if mode_rpm_series.empty:
                         continue
@@ -454,8 +459,12 @@ with tab1:
                         "Diameter Duration": diameter_duration_str,
                         "RPM": selected_int_rpm,
                         "Target Screw RPM": target_rpm_val,
+                        "Minimum Screw RPM": min_screw_rpm_val,
+                        "Maximum Screw RPM": max_screw_rpm_val,
                         "RPM Duration": rpm_duration_str,
                         "Speed": selected_int_speed,
+                        "Minimum Speed": min_speed_val,
+                        "Maximum Speed": max_speed_val,
                         "Speed Duration": speed_duration_str,
                         "Thickness": thickness,
                         "Start Date & Time": start_time_str,
@@ -488,7 +497,8 @@ with tab1:
 
         columns_ordered = [
             "Machine", "Operator", "Compound", "Diameter", "Diameter Duration", 
-            "RPM", "Target Screw RPM", "RPM Duration", "Speed", "Speed Duration", "Thickness", 
+            "RPM", "Target Screw RPM", "Minimum Screw RPM", "Maximum Screw RPM", "RPM Duration", 
+            "Speed", "Minimum Speed", "Maximum Speed", "Speed Duration", "Thickness", 
             "Start Date & Time", "End Date & Time", "Duration (Hours & Minutes)", "Duration (Minutes)"
         ]
 
