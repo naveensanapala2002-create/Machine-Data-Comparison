@@ -78,7 +78,9 @@ if "target_df" not in st.session_state:
             {"Compound": "XLPE", "Target Screw RPM": 55},
             {"Compound": "PU", "Target Screw RPM": 15},
             {"Compound": "TYPE-C", "Target Screw RPM": 30},
-            {"Compound": "EDPS-179", "Target Screw RPM": 20}
+            {"Compound": "EDPS-179", "Target Screw RPM": 20},
+            {"Compound": "SHF2- Black  specified", "Target Screw RPM": 40},
+            {"Compound": "SHF2 - Other  specified", "Target Screw RPM": 35}
         ])
         st.session_state["target_df"] = default_data
         default_data.to_csv(TARGETS_FILE, index=False)
